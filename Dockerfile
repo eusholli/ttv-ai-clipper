@@ -1,3 +1,4 @@
+# Build frontend
 FROM node:20-slim AS frontend-build
 WORKDIR /frontend
 COPY frontend/package*.json ./
@@ -7,6 +8,23 @@ RUN npm run build
 
 # Final stage
 FROM python:3.11-slim
+
+# Build-time arguments for versioning
+ARG BUILD_VERSION=1.0.0
+ARG BUILD_DATE
+ARG COMMIT_SHA
+
+# Add labels with version info
+LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${COMMIT_SHA}" \
+      org.opencontainers.image.title="MyApp" \
+      org.opencontainers.image.description="Frontend + Backend Application" \
+      org.opencontainers.image.vendor="Your Organization"
+
+# Set version as environment variable (accessible at runtime)
+ENV APP_VERSION=${BUILD_VERSION}
+
 WORKDIR /app
 
 # Install Nginx and python3-venv

@@ -1,4 +1,5 @@
 # backend/main.py
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -15,3 +16,10 @@ app.add_middleware(
 @app.get("/api/hello")
 async def read_root():
     return {"message": "Hello from FastAPI!"}
+
+@app.get("/api/version")
+async def get_version():
+    return {
+        "version": os.getenv("APP_VERSION", "unknown"),
+        "api": "FastAPI Backend"
+    }
