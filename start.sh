@@ -1,11 +1,10 @@
-#!/bin/bash
-# start.sh
+#!/bin/sh
 
 # Activate virtual environment
-source /app/venv/bin/activate
+. /app/venv/bin/activate
 
-# Start FastAPI in the background
-uvicorn main:app --host 0.0.0.0 --port 8000 &
+# Start FastAPI with minimal logging (warning level)
+uvicorn main:app --host 0.0.0.0 --port 8000 --log-level warning > /var/log/fastapi/access.log 2> /var/log/fastapi/error.log &
 
-# Start Nginx in the foreground
-nginx -g "daemon off;"
+# Start Nginx in quiet mode
+nginx -g "daemon off;" 2>/var/log/nginx/error.log
