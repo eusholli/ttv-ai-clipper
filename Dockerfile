@@ -1,4 +1,3 @@
-# Build frontend
 FROM node:20-slim AS frontend-build
 WORKDIR /frontend
 COPY frontend/package*.json ./
@@ -10,8 +9,13 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /app
 
-# Install Nginx
-RUN apt-get update && apt-get install -y nginx && rm -rf /var/lib/apt/lists/*
+# Install Nginx and python3-venv
+RUN apt-get update && apt-get install -y nginx python3-venv && rm -rf /var/lib/apt/lists/*
+
+# Create and activate virtual environment
+ENV VIRTUAL_ENV=/app/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Copy frontend build
 COPY --from=frontend-build /frontend/dist /app/static
