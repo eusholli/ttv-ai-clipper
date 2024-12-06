@@ -1,6 +1,6 @@
 #!/bin/sh
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "no-git")
 
