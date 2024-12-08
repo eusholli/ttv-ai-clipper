@@ -11,7 +11,7 @@ FROM python:3.11-slim
 
 # Build-time arguments for versioning
 ARG BUILD_VERSION="0.0.2"
-ARG BUILD_DATE="2024-12-08T10:39:12Z"
+ARG BUILD_DATE="2024-12-08T11:19:13Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
