@@ -10,14 +10,12 @@ RUN npm run build
 FROM python:3.11-slim
 
 # Build-time arguments for versioning
-ARG BUILD_VERSION="1.0.1"
-ARG BUILD_DATE="2024-12-01T10:37:30Z"
-ARG COMMIT_SHA="611736a"
+ARG BUILD_VERSION="0.0.1"
+ARG BUILD_DATE="2024-12-08T09:16:41Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
-      org.opencontainers.image.revision="${COMMIT_SHA}" \
       org.opencontainers.image.title="TTV AI Clipper" \
       org.opencontainers.image.description="Frontend + Backend Application" \
       org.opencontainers.image.vendor="Hollingworth LLC"
@@ -34,6 +32,7 @@ RUN apt-get update && \
     python3-venv \
     procps \
     curl \
+    vim \
     && rm -rf /var/lib/apt/lists/*
 
 # Create and activate virtual environment
@@ -48,6 +47,12 @@ COPY --from=frontend-build /frontend/dist /app/static
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ .
+COPY r2_manager.py .
+COPY transcript_metadata.pkl .
+COPY transcript_search.index .
+
+# Copy .env file
+COPY .env .
 
 # Configure Nginx
 COPY nginx.conf /etc/nginx/nginx.conf
