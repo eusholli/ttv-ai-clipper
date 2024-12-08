@@ -48,6 +48,7 @@ body {
   display: flex;
   gap: 1rem;
   margin-bottom: 1rem;
+  position: relative;
 }
 
 .search-input {
@@ -73,10 +74,28 @@ body {
   border-radius: 4px;
   cursor: pointer;
   transition: background-color 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .search-button:hover {
   background-color: #0056b3;
+}
+
+/* Spinner styles */
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
 }
 
 /* Filter styles */

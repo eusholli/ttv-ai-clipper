@@ -11,6 +11,7 @@ const DownloadIcon = () => (
 function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
+  const [isLoading, setIsLoading] = useState(false)
   const [filters, setFilters] = useState({
     speakers: [],
     dates: [],
@@ -59,9 +60,30 @@ function App() {
       });
   }, [])
 
+  // Effect to trigger search when filters change
+  useEffect(() => {
+    if (searchQuery || Object.values(selectedFilters).some(arr => arr.length > 0)) {
+      handleSearch();
+    }
+  }, [selectedFilters]);
+
+  // Validate and adjust number of results
+  const validateNumResults = (value) => {
+    const num = parseInt(value) || 5;
+    if (num < 5) return 5;
+    if (num > 20) return 20;
+    return num;
+  }
+
   // Handle search
   const handleSearch = async () => {
     try {
+      setIsLoading(true);
+      const validatedResults = validateNumResults(numResults);
+      if (validatedResults !== numResults) {
+        setNumResults(validatedResults);
+      }
+
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: {
@@ -69,7 +91,7 @@ function App() {
         },
         body: JSON.stringify({
           query: searchQuery,
-          top_k: numResults,
+          top_k: validatedResults,
           ...selectedFilters
         }),
       });
@@ -84,6 +106,8 @@ function App() {
     } catch (err) {
       console.error('Error performing search:', err);
       alert(`Failed to perform search:\n${err.message}`);
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -145,22 +169,27 @@ function App() {
       const currentValues = prev[filterType]
       const valueIndex = currentValues.indexOf(value)
       
-      if (valueIndex === -1) {
-        // Add value if not present
-        return {
-          ...prev,
-          [filterType]: [...currentValues, value]
-        }
-      } else {
-        // Remove value if already present
-        return {
-          ...prev,
-          [filterType]: currentValues.filter((_, index) => index !== valueIndex)
-        }
-      }
-    })
-    // Close the dropdown after selection
-    setOpenDropdown(null)
+      const newFilters = valueIndex === -1
+        ? { ...prev, [filterType]: [...currentValues, value] }
+        : { ...prev, [filterType]: currentValues.filter((_, index) => index !== valueIndex) };
+      
+      // Close the dropdown after selection
+      setOpenDropdown(null);
+      
+      return newFilters;
+    });
+  }
+
+  // Handle number of results change
+  const handleNumResultsChange = (e) => {
+    setNumResults(e.target.value);
+  }
+
+  // Handle results input key press
+  const handleResultsKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      handleSearch();
+    }
   }
 
   // Toggle dropdown
@@ -173,7 +202,7 @@ function App() {
     setSelectedFilters(prev => ({
       ...prev,
       [filterType]: prev[filterType].filter(item => item !== value)
-    }))
+    }));
   }
 
   const filterMappings = {
@@ -210,8 +239,8 @@ function App() {
               placeholder="Search transcripts..."
               className="search-input"
             />
-            <button onClick={handleSearch} className="search-button">
-              Search
+            <button onClick={handleSearch} className="search-button" disabled={isLoading}>
+              {isLoading ? <div className="spinner" /> : 'Search'}
             </button>
           </div>
 
@@ -258,10 +287,9 @@ function App() {
               <label className="filter-label">Results</label>
               <input
                 type="number"
-                min="1"
-                max="20"
                 value={numResults}
-                onChange={(e) => setNumResults(parseInt(e.target.value))}
+                onChange={handleNumResultsChange}
+                onKeyDown={handleResultsKeyDown}
                 className="results-input"
               />
             </div>

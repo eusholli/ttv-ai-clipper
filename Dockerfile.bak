@@ -11,7 +11,7 @@ FROM python:3.11-slim
 
 # Build-time arguments for versioning
 ARG BUILD_VERSION="0.0.1"
-ARG BUILD_DATE="2024-12-08T09:16:41Z"
+ARG BUILD_DATE="2024-12-08T09:22:43Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
@@ -50,9 +50,6 @@ COPY backend/ .
 COPY r2_manager.py .
 COPY transcript_metadata.pkl .
 COPY transcript_search.index .
-
-# Copy .env file
-COPY .env .
 
 # Configure Nginx
 COPY nginx.conf /etc/nginx/nginx.conf
