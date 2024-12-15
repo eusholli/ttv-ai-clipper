@@ -10,8 +10,8 @@ RUN npm run build
 FROM python:3.11-slim
 
 # Build-time arguments for versioning
-ARG BUILD_VERSION="0.0.2"
-ARG BUILD_DATE="2024-12-08T11:19:13Z"
+ARG BUILD_VERSION="0.0.3"
+ARG BUILD_DATE="2024-12-15T16:38:03Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
@@ -54,9 +54,10 @@ COPY transcript_search.index .
 # Configure Nginx
 COPY nginx.conf /etc/nginx/nginx.conf
 
-# Script to start both services
+# Script to start and stop services
 COPY start.sh .
-RUN chmod +x start.sh
+COPY stop.sh .
+RUN chmod +x start.sh stop.sh
 
 # Create log directories and set permissions
 RUN mkdir -p /var/log/fastapi && \

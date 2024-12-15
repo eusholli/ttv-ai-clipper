@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 import subprocess
 
-def read_env_file(env_path='.env'):
+def read_env_file(env_path='.env.local'):
     """Read key-value pairs from .env file."""
     env_vars = {}
     if not Path(env_path).exists():

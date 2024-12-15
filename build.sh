@@ -1,6 +1,6 @@
 #!/bin/sh
 
-VERSION="0.0.2"
+VERSION="0.0.3"
 DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Create a backup of the original Dockerfile
