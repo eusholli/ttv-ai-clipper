@@ -365,7 +365,7 @@ const MainContent = () => {
 }
 
 function App() {
-  const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY;
+  const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
   if (!publishableKey) {
     console.error("Missing needed keys. Please check your environment variables.");
