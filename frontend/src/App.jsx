@@ -1,5 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
+import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
+import { ClerkProvider, SignedIn } from '@clerk/clerk-react'
 import './styles.css'
+
+// Auth Components
+import SignInPage from './components/auth/SignIn'
+import SignUpPage from './components/auth/SignUp'
+import UserProfilePage from './components/auth/UserProfile'
+import Navigation from './components/auth/Navigation'
 
 // Download icon component
 const DownloadIcon = () => (
@@ -8,7 +16,17 @@ const DownloadIcon = () => (
   </svg>
 )
 
-function App() {
+// Protected Route Component
+const ProtectedRoute = ({ children }) => {
+  return (
+    <SignedIn>
+      {children}
+    </SignedIn>
+  );
+};
+
+// Main Content Component
+const MainContent = () => {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [isLoading, setIsLoading] = useState(false)
@@ -173,7 +191,6 @@ function App() {
         ? { ...prev, [filterType]: [...currentValues, value] }
         : { ...prev, [filterType]: currentValues.filter((_, index) => index !== valueIndex) };
       
-      // Close the dropdown after selection
       setOpenDropdown(null);
       
       return newFilters;
@@ -220,136 +237,169 @@ function App() {
   }
 
   return (
-    <div className="App">
-      <header className="header">
-        <div className="header-title">Telecom TV</div>
-      </header>
+    <div className="container">
+      <h1 className="main-title">Telecom TV AI Clipper</h1>
+      
+      {/* Search Section */}
+      <section className="search-section">
+        <div className="search-container">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Search transcripts..."
+            className="search-input"
+          />
+          <button onClick={handleSearch} className="search-button" disabled={isLoading}>
+            {isLoading ? <div className="spinner" /> : 'Search'}
+          </button>
+        </div>
 
-      <div className="container">
-        <h1 className="main-title">Telecom TV AI Clipper</h1>
-        
-        {/* Search Section */}
-        <section className="search-section">
-          <div className="search-container">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Search transcripts..."
-              className="search-input"
-            />
-            <button onClick={handleSearch} className="search-button" disabled={isLoading}>
-              {isLoading ? <div className="spinner" /> : 'Search'}
-            </button>
-          </div>
-
-          <div className="filters-container" ref={filtersRef}>
-            {Object.entries(filterMappings).map(([filterType, { label, values }]) => (
-              <div key={filterType} className="filter-group">
-                <label className="filter-label">{label}</label>
-                <div className="filter-dropdown">
-                  <button 
-                    className="dropdown-button"
-                    onClick={() => toggleDropdown(filterType)}
+        <div className="filters-container" ref={filtersRef}>
+          {Object.entries(filterMappings).map(([filterType, { label, values }]) => (
+            <div key={filterType} className="filter-group">
+              <label className="filter-label">{label}</label>
+              <div className="filter-dropdown">
+                <button 
+                  className="dropdown-button"
+                  onClick={() => toggleDropdown(filterType)}
+                >
+                  Select {label}
+                </button>
+                {openDropdown === filterType && (
+                  <div className="dropdown-content">
+                    {values.map(value => (
+                      <div 
+                        key={value}
+                        className={`dropdown-item ${selectedFilters[filterType].includes(value) ? 'selected' : ''}`}
+                        onClick={() => handleFilterChange(filterType, value)}
+                      >
+                        {value}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="selected-filters">
+                {selectedFilters[filterType].map(value => (
+                  <span 
+                    key={value} 
+                    className="filter-tag"
+                    onClick={() => removeFilter(filterType, value)}
                   >
-                    Select {label}
-                  </button>
-                  {openDropdown === filterType && (
-                    <div className="dropdown-content">
-                      {values.map(value => (
-                        <div 
-                          key={value}
-                          className={`dropdown-item ${selectedFilters[filterType].includes(value) ? 'selected' : ''}`}
-                          onClick={() => handleFilterChange(filterType, value)}
-                        >
-                          {value}
-                        </div>
-                      ))}
+                    {value} ×
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <div className="filter-group">
+            <label className="filter-label">Results</label>
+            <input
+              type="number"
+              value={numResults}
+              onChange={handleNumResultsChange}
+              onKeyDown={handleResultsKeyDown}
+              className="results-input"
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* Search Results */}
+      {searchResults.length > 0 && (
+        <div className="search-results">
+          {searchResults.map((result, index) => {
+            const stTs = timestampToSeconds(result.start_time)
+            const endTs = timestampToSeconds(result.end_time)
+            const startParam = stTs === 0 ? "0" : stTs - 1
+            const endParam = endTs === 0 ? "" : `&end=${endTs + 1}`
+            const ytUrl = `https://youtube.com/embed/${result.youtube_id}?start=${startParam}${endParam}&autoplay=0&rel=0`
+
+            return (
+              <article key={index} className="result-item">
+                <div className="result-content">
+                  <h2 className="result-title">{result.title}</h2>
+                  <div className="result-meta">
+                    {result.speaker} · {result.company}
+                  </div>
+                  <div className="result-time">
+                    {formatTimestamp(result.start_time)} - {formatTimestamp(result.end_time)} · {result.date}
+                    <span className="result-score">Match Score: {(result.score * 100).toFixed(1)}%</span>
+                  </div>
+                  <p className="result-text">{result.text}</p>
+                  {result.subjects && (
+                    <div className="result-tags">
+                      Tags: {result.subjects.join(', ')}
                     </div>
                   )}
                 </div>
-                <div className="selected-filters">
-                  {selectedFilters[filterType].map(value => (
-                    <span 
-                      key={value} 
-                      className="filter-tag"
-                      onClick={() => removeFilter(filterType, value)}
+                <div className="result-video">
+                  <iframe
+                    src={ytUrl}
+                    width="300"
+                    height="169"
+                    frameBorder="0"
+                    allowFullScreen
+                  />
+                  {result.download && (
+                    <button
+                      className="download-button"
+                      onClick={() => handleDownload(result)}
+                      disabled={downloading[result.segment_hash]}
                     >
-                      {value} ×
-                    </span>
-                  ))}
+                      <DownloadIcon />
+                      {downloading[result.segment_hash] ? 'Downloading...' : 'Download Clip'}
+                    </button>
+                  )}
                 </div>
-              </div>
-            ))}
-
-            <div className="filter-group">
-              <label className="filter-label">Results</label>
-              <input
-                type="number"
-                value={numResults}
-                onChange={handleNumResultsChange}
-                onKeyDown={handleResultsKeyDown}
-                className="results-input"
-              />
-            </div>
-          </div>
-        </section>
-
-        {/* Search Results */}
-        {searchResults.length > 0 && (
-          <div className="search-results">
-            {searchResults.map((result, index) => {
-              const stTs = timestampToSeconds(result.start_time)
-              const endTs = timestampToSeconds(result.end_time)
-              const startParam = stTs === 0 ? "0" : stTs - 1
-              const endParam = endTs === 0 ? "" : `&end=${endTs + 1}`
-              const ytUrl = `https://youtube.com/embed/${result.youtube_id}?start=${startParam}${endParam}&autoplay=0&rel=0`
-
-              return (
-                <article key={index} className="result-item">
-                  <div className="result-content">
-                    <h2 className="result-title">{result.title}</h2>
-                    <div className="result-meta">
-                      {result.speaker} · {result.company}
-                    </div>
-                    <div className="result-time">
-                      {formatTimestamp(result.start_time)} - {formatTimestamp(result.end_time)} · {result.date}
-                      <span className="result-score">Match Score: {(result.score * 100).toFixed(1)}%</span>
-                    </div>
-                    <p className="result-text">{result.text}</p>
-                    {result.subjects && (
-                      <div className="result-tags">
-                        Tags: {result.subjects.join(', ')}
-                      </div>
-                    )}
-                  </div>
-                  <div className="result-video">
-                    <iframe
-                      src={ytUrl}
-                      width="300"
-                      height="169"
-                      frameBorder="0"
-                      allowFullScreen
-                    />
-                    {result.download && (
-                      <button
-                        className="download-button"
-                        onClick={() => handleDownload(result)}
-                        disabled={downloading[result.segment_hash]}
-                      >
-                        <DownloadIcon />
-                        {downloading[result.segment_hash] ? 'Downloading...' : 'Download Clip'}
-                      </button>
-                    )}
-                  </div>
-                </article>
-              )
-            })}
-          </div>
-        )}
-      </div>
+              </article>
+            )
+          })}
+        </div>
+      )}
     </div>
+  )
+}
+
+function App() {
+  if (!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY) {
+    throw new Error("Missing Publishable Key")
+  }
+
+  return (
+    <ClerkProvider 
+      publishableKey={import.meta.env.VITE_CLERK_PUBLISHABLE_KEY}
+      routing="path"
+    >
+      <Router>
+        <div className="App">
+          <Navigation />
+          <Routes>
+            <Route 
+              path="/" 
+              element={
+                <ProtectedRoute>
+                  <MainContent />
+                </ProtectedRoute>
+              } 
+            />
+            <Route path="/sign-in/*" element={<SignInPage />} />
+            <Route path="/sign-up/*" element={<SignUpPage />} />
+            <Route 
+              path="/user-profile/*" 
+              element={
+                <ProtectedRoute>
+                  <UserProfilePage />
+                </ProtectedRoute>
+              } 
+            />
+          </Routes>
+        </div>
+      </Router>
+    </ClerkProvider>
   )
 }
 
