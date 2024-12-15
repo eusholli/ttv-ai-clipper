@@ -365,13 +365,29 @@ const MainContent = () => {
 }
 
 function App() {
-  if (!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY) {
-    throw new Error("Missing Publishable Key")
+  const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+
+  if (!publishableKey) {
+    console.error("Missing Clerk Publishable Key. Please check your environment variables.");
+    return (
+      <div style={{ 
+        padding: '20px', 
+        textAlign: 'center', 
+        color: '#721c24',
+        backgroundColor: '#f8d7da',
+        border: '1px solid #f5c6cb',
+        borderRadius: '4px',
+        margin: '20px'
+      }}>
+        <h2>Configuration Error</h2>
+        <p>The application is missing required configuration. Please contact the administrator.</p>
+      </div>
+    );
   }
 
   return (
     <ClerkProvider 
-      publishableKey={import.meta.env.VITE_CLERK_PUBLISHABLE_KEY}
+      publishableKey={publishableKey}
       routing="path"
     >
       <Router>
