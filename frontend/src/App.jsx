@@ -365,8 +365,8 @@ const MainContent = () => {
 }
 
 function App() {
-  console.log(import.meta.env)
-
+  
+  console.log('import.meta.env:', import.meta.env)
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
   if (!publishableKey) {
