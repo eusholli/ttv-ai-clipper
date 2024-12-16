@@ -25,6 +25,9 @@ ENV APP_VERSION=${BUILD_VERSION}
 
 WORKDIR /app
 
+# Set noninteractive frontend before apt-get
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Install Nginx, python3-venv, and debugging tools
 RUN apt-get update && \
     apt-get install -y \
