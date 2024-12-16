@@ -22,9 +22,5 @@ export default defineConfig(({ mode }) => {
         }
       }
     },
-    define: {
-    'process.env.VITE_CLERK_PUBLISHABLE_KEY': 
-      JSON.stringify(process.env.VITE_CLERK_PUBLISHABLE_KEY)
-    }
   }
 })
