@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
-import { ClerkProvider, SignedIn } from '@clerk/clerk-react'
+import { ClerkProvider, SignedIn, useAuth } from '@clerk/clerk-react'
 import './styles.css'
 
 // Auth Components
@@ -25,6 +25,63 @@ const ProtectedRoute = ({ children }) => {
   );
 };
 
+// Download Button Component
+const DownloadButton = ({ result, downloading, setDownloading }) => {
+  const { isSignedIn } = useAuth();
+  const navigate = useNavigate();
+
+  const handleDownload = async () => {
+    if (!isSignedIn) {
+      // Save current search state before redirecting
+      const searchState = {
+        searchQuery: window.searchQuery,
+        selectedFilters: window.selectedFilters,
+        numResults: window.numResults
+      };
+      localStorage.setItem('searchState', JSON.stringify(searchState));
+      navigate('/sign-in');
+      return;
+    }
+
+    try {
+      setDownloading({ ...downloading, [result.segment_hash]: true });
+      
+      const response = await fetch(`/api/download/${result.segment_hash}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Status: ${response.status}\nMessage: ${errorText}`);
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `clip-${result.segment_hash}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err) {
+      console.error('Error downloading clip:', err);
+      alert(`Failed to download clip:\n${err.message}`);
+    } finally {
+      setDownloading({ ...downloading, [result.segment_hash]: false });
+    }
+  };
+
+  return (
+    <button
+      className="download-button"
+      onClick={handleDownload}
+      disabled={downloading[result.segment_hash]}
+    >
+      <DownloadIcon />
+      {downloading[result.segment_hash] ? 'Downloading...' : 
+       !isSignedIn ? 'Sign in to Download' : 'Download Clip'}
+    </button>
+  );
+};
+
 // Main Content Component
 const MainContent = () => {
   const [searchQuery, setSearchQuery] = useState('')
@@ -46,6 +103,26 @@ const MainContent = () => {
   const [openDropdown, setOpenDropdown] = useState(null)
   const [downloading, setDownloading] = useState({})
   const filtersRef = useRef(null)
+  const { isSignedIn } = useAuth();
+
+  // Expose state to window for DownloadButton access
+  window.searchQuery = searchQuery;
+  window.selectedFilters = selectedFilters;
+  window.numResults = numResults;
+
+  // Restore search state after sign-in
+  useEffect(() => {
+    if (isSignedIn) {
+      const savedState = localStorage.getItem('searchState');
+      if (savedState) {
+        const { searchQuery: savedQuery, selectedFilters: savedFilters, numResults: savedResults } = JSON.parse(savedState);
+        setSearchQuery(savedQuery);
+        setSelectedFilters(savedFilters);
+        setNumResults(savedResults);
+        localStorage.removeItem('searchState'); // Clear saved state
+      }
+    }
+  }, [isSignedIn]);
 
   // Handle clicks outside filters
   useEffect(() => {
@@ -78,12 +155,12 @@ const MainContent = () => {
       });
   }, [])
 
-  // Effect to trigger search when filters change
+  // Effect to trigger search when filters change or when restored from localStorage
   useEffect(() => {
     if (searchQuery || Object.values(selectedFilters).some(arr => arr.length > 0)) {
       handleSearch();
     }
-  }, [selectedFilters]);
+  }, [selectedFilters, searchQuery]);
 
   // Validate and adjust number of results
   const validateNumResults = (value) => {
@@ -126,34 +203,6 @@ const MainContent = () => {
       alert(`Failed to perform search:\n${err.message}`);
     } finally {
       setIsLoading(false);
-    }
-  }
-
-  // Handle clip download
-  const handleDownload = async (result) => {
-    try {
-      setDownloading({ ...downloading, [result.segment_hash]: true });
-      
-      const response = await fetch(`/api/download/${result.segment_hash}`);
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Status: ${response.status}\nMessage: ${errorText}`);
-      }
-      
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `clip-${result.segment_hash}.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-    } catch (err) {
-      console.error('Error downloading clip:', err);
-      alert(`Failed to download clip:\n${err.message}`);
-    } finally {
-      setDownloading({ ...downloading, [result.segment_hash]: false });
     }
   }
 
@@ -345,14 +394,11 @@ const MainContent = () => {
                     allowFullScreen
                   />
                   {result.download && (
-                    <button
-                      className="download-button"
-                      onClick={() => handleDownload(result)}
-                      disabled={downloading[result.segment_hash]}
-                    >
-                      <DownloadIcon />
-                      {downloading[result.segment_hash] ? 'Downloading...' : 'Download Clip'}
-                    </button>
+                    <DownloadButton 
+                      result={result}
+                      downloading={downloading}
+                      setDownloading={setDownloading}
+                    />
                   )}
                 </div>
               </article>
@@ -396,14 +442,7 @@ function App() {
         <div className="App">
           <Navigation />
           <Routes>
-            <Route 
-              path="/" 
-              element={
-                <ProtectedRoute>
-                  <MainContent />
-                </ProtectedRoute>
-              } 
-            />
+            <Route path="/" element={<MainContent />} />
             <Route path="/sign-in/*" element={<SignInPage />} />
             <Route path="/sign-up/*" element={<SignUpPage />} />
             <Route 
