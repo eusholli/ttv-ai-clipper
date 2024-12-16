@@ -11,7 +11,7 @@ FROM python:3.11-slim
 
 # Build-time arguments for versioning
 ARG BUILD_VERSION="0.0.3"
-ARG BUILD_DATE="2024-12-15T16:38:03Z"
+ARG BUILD_DATE="2024-12-16T08:04:39Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
@@ -33,6 +33,7 @@ RUN apt-get update && \
     procps \
     curl \
     vim \
+    openssh-server \
     && rm -rf /var/lib/apt/lists/*
 
 # Create and activate virtual environment

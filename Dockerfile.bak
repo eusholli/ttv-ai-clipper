@@ -10,8 +10,8 @@ RUN npm run build
 FROM python:3.11-slim
 
 # Build-time arguments for versioning
-ARG BUILD_VERSION="0.0.2"
-ARG BUILD_DATE="2024-12-08T11:19:13Z"
+ARG BUILD_VERSION="0.0.3"
+ARG BUILD_DATE="2024-12-15T16:38:03Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
