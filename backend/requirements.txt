@@ -7,3 +7,4 @@ faiss-cpu
 numpy
 pydantic
 boto3
+stripe
