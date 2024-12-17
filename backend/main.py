@@ -1,6 +1,6 @@
 # backend/main.py
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from sentence_transformers import SentenceTransformer
@@ -13,9 +13,20 @@ from datetime import datetime
 import re
 from dotenv import load_dotenv
 from r2_manager import R2Manager
+import stripe
+from typing import Optional
+import json
 
 # Load environment variables
 load_dotenv()
+
+# Initialize Stripe
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+if not stripe.api_key:
+    raise ValueError("STRIPE_SECRET_KEY environment variable is required")
+if not STRIPE_WEBHOOK_SECRET:
+    raise ValueError("STRIPE_WEBHOOK_SECRET environment variable is required")
 
 app = FastAPI()
 
@@ -29,6 +40,15 @@ app.add_middleware(
 
 # Initialize R2Manager
 r2_manager = R2Manager()
+
+async def verify_clerk_token(authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    return authorization.split(" ")[1]
+
+class SubscriptionRequest(BaseModel):
+    priceId: str
+    customerId: Optional[str] = None
 
 class TranscriptSearchSystem:
     def __init__(self, index_path='transcript_search.index', metadata_path='transcript_metadata.pkl'):
@@ -194,6 +214,179 @@ async def download_clip(segment_hash: str):
             'Content-Disposition': f'attachment; filename=clip-{segment_hash}.mp4'
         }
     )
+
+@app.post("/api/create-checkout-session")
+async def create_checkout_session(
+    request: SubscriptionRequest,
+    token: str = Depends(verify_clerk_token)
+):
+    """Create a Stripe Checkout session for subscription"""
+    try:
+        # If no customer ID provided, create a new customer
+        if not request.customerId:
+            try:
+                customer = stripe.Customer.create()
+                customer_id = customer.id
+                print(f"Created new Stripe customer: {customer_id}")
+            except stripe.error.StripeError as e:
+                print(f"Error creating Stripe customer: {str(e)}")
+                raise HTTPException(status_code=400, detail="Failed to create Stripe customer")
+        else:
+            customer_id = request.customerId
+            print(f"Using existing Stripe customer: {customer_id}")
+
+        # Get the domain from environment variable
+        domain = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
+        try:
+            # Create Stripe Checkout Session
+            checkout_session = stripe.checkout.Session.create(
+                customer=customer_id,
+                payment_method_types=['card'],
+                line_items=[{
+                    'price': request.priceId,
+                    'quantity': 1,
+                }],
+                mode='subscription',
+                success_url=f'{domain}/user-profile?success=true',
+                cancel_url=f'{domain}/user-profile?canceled=true',
+                allow_promotion_codes=True,
+            )
+            print(f"Created checkout session for customer {customer_id}")
+            
+            return {
+                "url": checkout_session.url,
+                "customerId": customer_id
+            }
+        except stripe.error.StripeError as e:
+            print(f"Error creating checkout session: {str(e)}")
+            raise HTTPException(status_code=400, detail="Failed to create checkout session")
+            
+    except Exception as e:
+        print(f"Unexpected error in create_checkout_session: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/api/create-portal-session")
+async def create_portal_session(
+    customer_id: str,
+    token: str = Depends(verify_clerk_token)
+):
+    """Create a Stripe Customer Portal session"""
+    try:
+        if not customer_id:
+            raise HTTPException(status_code=400, detail="Customer ID is required")
+            
+        print(f"Creating portal session for customer: {customer_id}")
+        
+        # Get the domain from environment variable
+        domain = os.getenv("FRONTEND_URL", "http://localhost:5173")
+        
+        try:
+            # Create the portal session
+            session = stripe.billing_portal.Session.create(
+                customer=customer_id,
+                return_url=f'{domain}/user-profile'
+            )
+            print(f"Created portal session for customer {customer_id}")
+            
+            return {"url": session.url}
+        except stripe.error.StripeError as e:
+            print(f"Error creating portal session: {str(e)}")
+            raise HTTPException(status_code=400, detail="Failed to create portal session")
+            
+    except Exception as e:
+        print(f"Unexpected error in create_portal_session: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/subscription-status")
+async def get_subscription_status(
+    customer_id: str,
+    token: str = Depends(verify_clerk_token)
+):
+    """Get a customer's subscription status"""
+    try:
+        if not customer_id:
+            raise HTTPException(status_code=400, detail="Customer ID is required")
+            
+        print(f"Checking subscription status for customer: {customer_id}")
+        
+        try:
+            subscriptions = stripe.Subscription.list(
+                customer=customer_id,
+                status='active',
+                limit=1
+            )
+            
+            if not subscriptions.data:
+                print(f"No active subscription found for customer {customer_id}")
+                return {"status": "inactive"}
+                
+            subscription = subscriptions.data[0]
+            print(f"Found active subscription for customer {customer_id}")
+            
+            return {
+                "status": "active",
+                "subscriptionId": subscription.id,
+                "currentPeriodEnd": subscription.current_period_end,
+                "cancelAtPeriodEnd": subscription.cancel_at_period_end
+            }
+        except stripe.error.StripeError as e:
+            print(f"Error checking subscription status: {str(e)}")
+            raise HTTPException(status_code=400, detail="Failed to check subscription status")
+            
+    except Exception as e:
+        print(f"Unexpected error in get_subscription_status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/api/webhook")
+async def stripe_webhook(request: Request):
+    """Handle Stripe webhook events"""
+    try:
+        # Get the raw body
+        body = await request.body()
+        # Get the Stripe signature from headers
+        sig_header = request.headers.get('stripe-signature')
+        
+        try:
+            # Verify the event
+            event = stripe.Webhook.construct_event(
+                body,
+                sig_header,
+                STRIPE_WEBHOOK_SECRET
+            )
+        except ValueError as e:
+            print("Error parsing webhook payload")
+            raise HTTPException(status_code=400, detail="Invalid payload")
+        except stripe.error.SignatureVerificationError as e:
+            print("Error verifying webhook signature")
+            raise HTTPException(status_code=400, detail="Invalid signature")
+
+        # Handle the event
+        if event['type'].startswith('customer.subscription.'):
+            subscription = event['data']['object']
+            customer_id = subscription['customer']
+            
+            try:
+                # Get the customer
+                customer = stripe.Customer.retrieve(customer_id)
+                
+                # Handle different subscription events
+                if event['type'] == 'customer.subscription.created':
+                    print(f"New subscription created for customer {customer_id}")
+                elif event['type'] == 'customer.subscription.updated':
+                    print(f"Subscription updated for customer {customer_id}")
+                elif event['type'] == 'customer.subscription.deleted':
+                    print(f"Subscription cancelled for customer {customer_id}")
+
+            except stripe.error.StripeError as e:
+                print(f"Error processing subscription event: {str(e)}")
+                return {"status": "error", "message": str(e)}
+
+        return {"status": "success"}
+        
+    except Exception as e:
+        print(f"Error processing webhook: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/version")
 async def get_version():

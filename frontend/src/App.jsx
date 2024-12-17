@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, useNavigate, Navigate } from 'react-router-dom'
 import { ClerkProvider, SignedIn, useAuth } from '@clerk/clerk-react'
 import './styles.css'
 
@@ -450,6 +450,15 @@ function App() {
               element={
                 <ProtectedRoute>
                   <UserProfilePage />
+                </ProtectedRoute>
+              } 
+            />
+            {/* Add redirect from /profile to /user-profile */}
+            <Route 
+              path="/profile" 
+              element={
+                <ProtectedRoute>
+                  <Navigate to="/user-profile" replace />
                 </ProtectedRoute>
               } 
             />

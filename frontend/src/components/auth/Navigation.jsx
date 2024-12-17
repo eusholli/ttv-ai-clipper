@@ -28,7 +28,7 @@ const Navigation = () => {
         {isSignedIn ? (
           <>
             <span className="welcome-text">Welcome, {user?.firstName}!</span>
-            <Link to="/user-profile" className="nav-link">Profile</Link>
+            <Link to="/user-profile" className="nav-link">Subscriptions</Link>
             <button 
               onClick={handleSignOut} 
               className="nav-button"
@@ -39,7 +39,6 @@ const Navigation = () => {
         ) : (
           <>
             <Link to="/sign-in" className="nav-link">Sign In</Link>
-            <Link to="/sign-up" className="nav-button">Sign Up</Link>
           </>
         )}
       </div>
