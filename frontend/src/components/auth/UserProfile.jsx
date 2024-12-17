@@ -210,6 +210,8 @@ const UserProfilePage = () => {
                 <>
                   Active ({subscriptionStatus.cancelAtPeriodEnd ? 'Ends' : 'Renews'}: {new Date(subscriptionStatus.currentPeriodEnd * 1000).toLocaleDateString()})
                 </>
+              ) : subscriptionStatus === null ? (
+                'Loading...'
               ) : (
                 'Inactive'
               )}
@@ -226,7 +228,7 @@ const UserProfilePage = () => {
             >
               {loading ? 'Processing...' : 'Manage Subscription'}
             </button>
-          ) : (
+          ) : subscriptionStatus !== null && (
             <button
               onClick={handleSubscribe}
               disabled={loading}
@@ -242,7 +244,7 @@ const UserProfilePage = () => {
             </div>
           )}
 
-          {subscriptionStatus?.status !== 'active' && (
+          {subscriptionStatus !== null && subscriptionStatus.status === 'inactive' && (
             <button 
               onClick={handleDeleteAccount}
               className="delete-account-button"
