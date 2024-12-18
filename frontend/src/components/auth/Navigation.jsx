@@ -1,10 +1,12 @@
 import { useAuth, useUser } from "@clerk/clerk-react";
 import { Link, useNavigate } from "react-router-dom";
+import { useState } from "react";
 
 const Navigation = () => {
   const { isLoaded, isSignedIn, signOut } = useAuth();
   const { user } = useUser();
   const navigate = useNavigate();
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   if (!isLoaded) {
     return <div className="nav-loading">Loading...</div>;
@@ -19,18 +21,34 @@ const Navigation = () => {
     }
   };
 
+  const toggleMenu = () => {
+    setIsMenuOpen(!isMenuOpen);
+  };
+
   return (
     <nav className="auth-nav">
       <div className="nav-left">
         <Link to="/" className="nav-logo">Telecom TV</Link>
       </div>
-      <div className="nav-right">
+      
+      <button className="hamburger-menu" onClick={toggleMenu} aria-label="Toggle menu">
+        <span className="hamburger-line"></span>
+        <span className="hamburger-line"></span>
+        <span className="hamburger-line"></span>
+      </button>
+
+      <div className={`nav-right ${isMenuOpen ? 'nav-right-open' : ''}`}>
         {isSignedIn ? (
           <>
             <span className="welcome-text">Welcome, {user?.firstName}!</span>
-            <Link to="/user-profile" className="nav-link">Subscriptions</Link>
+            <Link to="/user-profile" className="nav-link" onClick={() => setIsMenuOpen(false)}>
+              Subscriptions
+            </Link>
             <button 
-              onClick={handleSignOut} 
+              onClick={() => {
+                handleSignOut();
+                setIsMenuOpen(false);
+              }} 
               className="nav-button"
             >
               Sign Out
@@ -38,7 +56,9 @@ const Navigation = () => {
           </>
         ) : (
           <>
-            <Link to="/sign-in" className="nav-link">Sign In</Link>
+            <Link to="/sign-in" className="nav-link" onClick={() => setIsMenuOpen(false)}>
+              Sign In
+            </Link>
           </>
         )}
       </div>
