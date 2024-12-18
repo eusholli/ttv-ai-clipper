@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { loadStripe } from "@stripe/stripe-js";
 import { useState, useEffect } from "react";
 import axios from "axios";
+import Pricing from "../pricing/Pricing";
 
 // Initialize Stripe
 const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY);
@@ -10,13 +11,14 @@ const SUBSCRIPTION_PRICE_ID = import.meta.env.VITE_STRIPE_MONTHLY_PRICE_ID;
 
 const UserProfilePage = () => {
   const { user } = useUser();
-  const { signOut, getToken } = useAuth();
+  const { getToken } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [loading, setLoading] = useState(false);
   const [subscriptionStatus, setSubscriptionStatus] = useState(null);
   const [error, setError] = useState(null);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [initialCheckComplete, setInitialCheckComplete] = useState(false);
 
   const updateUserMetadata = async (stripeCustomerId) => {
     try {
@@ -58,9 +60,11 @@ const UserProfilePage = () => {
         console.log("No Stripe Customer ID found, setting status to inactive");
         setSubscriptionStatus({ status: 'inactive' });
       }
+      setInitialCheckComplete(true);
     } catch (err) {
       console.error("Error checking subscription:", err);
       setSubscriptionStatus({ status: 'inactive' });
+      setInitialCheckComplete(true);
     }
   };
 
@@ -156,30 +160,19 @@ const UserProfilePage = () => {
     }
   };
 
-  const handleDeleteAccount = async () => {
-    if (!user) return;
-    
-    if (window.confirm("Are you sure you want to delete your account? This action cannot be undone.")) {
-      try {
-        const deleteAccount = user.delete.bind(user);
-        await deleteAccount();
-        await signOut();
-        navigate("/sign-up");
-      } catch (error) {
-        console.error("Error deleting account:", error);
-        alert("Failed to delete account. Please try again.");
-      }
-    }
-  };
-
-  if (!user) {
+  if (!user || !initialCheckComplete) {
     return <div>Loading...</div>;
+  }
+
+  // Show Pricing component if subscription is inactive
+  if (subscriptionStatus.status === 'inactive') {
+    return <Pricing />;
   }
 
   return (
     <div className="auth-container">
       <div className="auth-card">
-        <h2>User Profile</h2>
+        <h2>My Subscription</h2>
         
         {showSuccess && (
           <div className="success-message">
@@ -210,8 +203,6 @@ const UserProfilePage = () => {
                 <>
                   Active ({subscriptionStatus.cancelAtPeriodEnd ? 'Ends' : 'Renews'}: {new Date(subscriptionStatus.currentPeriodEnd * 1000).toLocaleDateString()})
                 </>
-              ) : subscriptionStatus === null ? (
-                'Loading...'
               ) : (
                 'Inactive'
               )}
@@ -228,7 +219,7 @@ const UserProfilePage = () => {
             >
               {loading ? 'Processing...' : 'Manage Subscription'}
             </button>
-          ) : subscriptionStatus !== null && (
+          ) : (
             <button
               onClick={handleSubscribe}
               disabled={loading}
@@ -242,15 +233,6 @@ const UserProfilePage = () => {
             <div className="error-message">
               {error}
             </div>
-          )}
-
-          {subscriptionStatus !== null && subscriptionStatus.status === 'inactive' && (
-            <button 
-              onClick={handleDeleteAccount}
-              className="delete-account-button"
-            >
-              Delete Account
-            </button>
           )}
         </div>
       </div>
@@ -306,17 +288,6 @@ const UserProfilePage = () => {
 
         .profile-actions {
           margin-top: 20px;
-        }
-
-        .delete-account-button {
-          background-color: #ff4444;
-          color: white;
-          padding: 10px 20px;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          font-size: 16px;
-          width: 100%;
         }
       `}</style>
     </div>

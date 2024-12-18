@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import { BrowserRouter as Router, Routes, Route, useNavigate, Navigate } from 'react-router-dom'
-import { ClerkProvider, SignedIn, useAuth } from '@clerk/clerk-react'
+import { ClerkProvider, SignedIn, useAuth, useUser } from '@clerk/clerk-react'
 import './styles.css'
+import axios from 'axios'
 
 // Auth Components
 import SignInPage from './components/auth/SignIn'
 import SignUpPage from './components/auth/SignUp'
 import UserProfilePage from './components/auth/UserProfile'
 import Navigation from './components/auth/Navigation'
+import Pricing from './components/pricing/Pricing'
 
 // Download icon component
 const DownloadIcon = () => (
@@ -27,7 +29,8 @@ const ProtectedRoute = ({ children }) => {
 
 // Download Button Component
 const DownloadButton = ({ result, downloading, setDownloading }) => {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, getToken } = useAuth();
+  const { user } = useUser();
   const navigate = useNavigate();
 
   const handleDownload = async () => {
@@ -44,15 +47,33 @@ const DownloadButton = ({ result, downloading, setDownloading }) => {
     }
 
     try {
+      // Check subscription status first
+      const token = await getToken();
+      const stripeCustomerId = user?.unsafeMetadata?.stripeCustomerId;
+      
+      if (!stripeCustomerId) {
+        navigate('/user-profile');
+        return;
+      }
+
+      const response = await axios.get(`/api/subscription-status?customer_id=${stripeCustomerId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.data.status !== 'active') {
+        navigate('/user-profile');
+        return;
+      }
+
       setDownloading({ ...downloading, [result.segment_hash]: true });
       
-      const response = await fetch(`/api/download/${result.segment_hash}`);
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Status: ${response.status}\nMessage: ${errorText}`);
+      const downloadResponse = await fetch(`/api/download/${result.segment_hash}`);
+      if (!downloadResponse.ok) {
+        const errorText = await downloadResponse.text();
+        throw new Error(`Status: ${downloadResponse.status}\nMessage: ${errorText}`);
       }
       
-      const blob = await response.blob();
+      const blob = await downloadResponse.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -63,7 +84,11 @@ const DownloadButton = ({ result, downloading, setDownloading }) => {
       document.body.removeChild(a);
     } catch (err) {
       console.error('Error downloading clip:', err);
-      alert(`Failed to download clip:\n${err.message}`);
+      if (err.response?.status === 403) {
+        navigate('/pricing');
+      } else {
+        alert(`Failed to download clip:\n${err.message}`);
+      }
     } finally {
       setDownloading({ ...downloading, [result.segment_hash]: false });
     }
@@ -77,7 +102,7 @@ const DownloadButton = ({ result, downloading, setDownloading }) => {
     >
       <DownloadIcon />
       {downloading[result.segment_hash] ? 'Downloading...' : 
-       !isSignedIn ? 'Sign in to Download' : 'Download Clip'}
+       !isSignedIn ? 'Subscribe to Download' : 'Download Clip'}
     </button>
   );
 };
@@ -445,6 +470,7 @@ function App() {
             <Route path="/" element={<MainContent />} />
             <Route path="/sign-in/*" element={<SignInPage />} />
             <Route path="/sign-up/*" element={<SignUpPage />} />
+            <Route path="/pricing" element={<Pricing />} />
             <Route 
               path="/user-profile/*" 
               element={

@@ -7,6 +7,7 @@ const SignInPage = () => {
         routing="path" 
         path="/sign-in" 
         signUpUrl="/sign-up"
+        forceRedirectUrl="/user-profile"
         appearance={{
           elements: {
             rootBox: "auth-root",

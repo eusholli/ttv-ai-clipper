@@ -42,7 +42,7 @@ const Navigation = () => {
           <>
             <span className="welcome-text">Welcome, {user?.firstName}!</span>
             <Link to="/user-profile" className="nav-link" onClick={() => setIsMenuOpen(false)}>
-              Subscriptions
+              My Subscription
             </Link>
             <button 
               onClick={() => {

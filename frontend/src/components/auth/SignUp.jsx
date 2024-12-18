@@ -7,13 +7,16 @@ const SignUpPage = () => {
         routing="path"
         path="/sign-up"
         signInUrl="/sign-in"
-        fallbackRedirectUrl="/"
+        forceRedirectUrl="/user-profile"
         appearance={{
           elements: {
-            formButtonPrimary: {
-              backgroundColor: '#007bff',
-              '&:hover': { backgroundColor: '#0056b3' }
-            }
+            rootBox: "auth-root",
+            card: "auth-card",
+            headerTitle: "auth-title",
+            headerSubtitle: "auth-subtitle",
+            socialButtonsBlockButton: "auth-social-button",
+            formButtonPrimary: "auth-submit-button",
+            footerActionLink: "auth-link"
           }
         }}
       />
