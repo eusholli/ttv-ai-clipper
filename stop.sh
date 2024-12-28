@@ -6,4 +6,7 @@ pkill -f "uvicorn main:app"
 # Stop nginx gracefully
 nginx -s quit
 
-echo "Stopped FastAPI and Nginx servers"
+# Stop PostgreSQL gracefully
+pg_ctlcluster 16 main stop
+
+echo "Stopped FastAPI, Nginx, and PostgreSQL servers"
