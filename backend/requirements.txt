@@ -10,3 +10,4 @@ boto3
 stripe
 psycopg2-binary
 python-json-logger
+spacy

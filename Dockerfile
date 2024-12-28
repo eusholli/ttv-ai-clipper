@@ -73,7 +73,8 @@ COPY --from=frontend-build /frontend/dist /app/static
 
 # Setup backend
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -m spacy download en_core_web_sm
 COPY backend/ .
 COPY r2_manager.py .
 COPY transcript_metadata.pkl .

@@ -231,28 +231,16 @@ const MainContent = () => {
     }
   }
 
-  // Convert timestamp to seconds
-  const timestampToSeconds = (timestamp) => {
-    const parts = timestamp.split(':')
-    if (parts.length === 3) {
-      const [h, m, s] = parts.map(Number)
-      return h * 3600 + m * 60 + s
-    } else if (parts.length === 2) {
-      const [m, s] = parts.map(Number)
-      return m * 60 + s
-    } else {
-      console.error(`Invalid timestamp format: ${timestamp}`)
-      return 0
+  // Format seconds to HH:MM:SS
+  const formatSecondsToTime = (seconds) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+    
+    if (hours > 0) {
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
     }
-  }
-
-  // Format timestamp for display
-  const formatTimestamp = (timestamp) => {
-    const parts = timestamp.split(':')
-    if (parts.length === 2) {
-      return `${parts[0]}m ${parts[1]}s`
-    }
-    return timestamp
+    return `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
   }
 
   // Handle filter selection
@@ -386,10 +374,8 @@ const MainContent = () => {
       {searchResults.length > 0 && (
         <div className="search-results">
           {searchResults.map((result, index) => {
-            const stTs = timestampToSeconds(result.start_time)
-            const endTs = timestampToSeconds(result.end_time)
-            const startParam = stTs === 0 ? "0" : stTs - 1
-            const endParam = endTs === 0 ? "" : `&end=${endTs + 1}`
+            const startParam = result.start_time === 0 ? "0" : result.start_time - 1
+            const endParam = result.end_time === 0 ? "" : `&end=${result.end_time + 1}`
             const ytUrl = `https://youtube.com/embed/${result.youtube_id}?start=${startParam}${endParam}&autoplay=0&rel=0`
 
             return (
@@ -400,7 +386,7 @@ const MainContent = () => {
                     {result.speaker} · {result.company}
                   </div>
                   <div className="result-time">
-                    {formatTimestamp(result.start_time)} - {formatTimestamp(result.end_time)} · {result.date}
+                    {formatSecondsToTime(result.start_time)} - {formatSecondsToTime(result.end_time)} · {result.date}
                     <span className="result-score">Match Score: {(result.score * 100).toFixed(1)}%</span>
                   </div>
                   <p className="result-text">{result.text}</p>
