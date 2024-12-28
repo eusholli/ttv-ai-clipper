@@ -60,6 +60,7 @@ class SearchRequest(BaseModel):
     selected_date: Optional[List[str]] = None
     selected_title: Optional[List[str]] = None
     selected_company: Optional[List[str]] = None
+    selected_subject: Optional[List[str]] = None
 
 @app.get("/api/filters")
 async def get_filters():
@@ -82,6 +83,8 @@ async def search(request: SearchRequest):
         dates = [datetime.strptime(d, "%b %d, %Y") for d in request.selected_date]
         if dates:
             filters['date_range'] = (min(dates), max(dates))
+    if request.selected_subject:
+        filters['subjects'] = request.selected_subject
 
     results = transcript_search.hybrid_search(
         search_text=request.query,

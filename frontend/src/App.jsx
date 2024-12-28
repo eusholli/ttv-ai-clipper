@@ -116,13 +116,15 @@ const MainContent = () => {
     speakers: [],
     dates: [],
     titles: [],
-    companies: []
+    companies: [],
+    subjects: []
   })
   const [selectedFilters, setSelectedFilters] = useState({
     selected_speaker: [],
     selected_date: [],
     selected_title: [],
-    selected_company: []
+    selected_company: [],
+    selected_subject: []
   })
   const [numResults, setNumResults] = useState(5)
   const [openDropdown, setOpenDropdown] = useState(null)
@@ -288,7 +290,8 @@ const MainContent = () => {
     selected_speaker: { label: 'Speakers', values: filters.speakers },
     selected_date: { label: 'Dates', values: filters.dates },
     selected_title: { label: 'Titles', values: filters.titles },
-    selected_company: { label: 'Companies', values: filters.companies }
+    selected_company: { label: 'Companies', values: filters.companies },
+    selected_subject: { label: 'Subjects', values: filters.subjects }
   }
 
   // Handle key press for search input
@@ -386,7 +389,7 @@ const MainContent = () => {
                     {result.speaker} · {result.company}
                   </div>
                   <div className="result-time">
-                    {formatSecondsToTime(result.start_time)} - {formatSecondsToTime(result.end_time)} · {result.date}
+                    {formatSecondsToTime(result.start_time)} - {formatSecondsToTime(result.end_time)} · {result.date.split('T')[0]}
                     <span className="result-score">Match Score: {(result.score * 100).toFixed(1)}%</span>
                   </div>
                   <p className="result-text">{result.text}</p>
