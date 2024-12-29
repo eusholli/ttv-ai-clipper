@@ -11,3 +11,9 @@ stripe
 psycopg2-binary
 python-json-logger
 spacy
+playwright
+backoff
+bs4
+yt_dlp
+pytube
+moviepy

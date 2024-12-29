@@ -110,6 +110,7 @@ class TranscriptSearch:
         
         # Initialize filter values
         self._filter_values = self._fetch_filter_values()
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
 
     def create_schema(self):
         """Create the database schema with proper indexes"""
@@ -176,8 +177,8 @@ class TranscriptSearch:
         Add a single transcript entry with all its metadata
         """
         # Generate embedding
-        model = SentenceTransformer('all-MiniLM-L6-v2')
-        embedding = model.encode(text)
+        # model = SentenceTransformer('all-MiniLM-L6-v2')
+        embedding = self.model.encode(text)
 
         try:
             self.cursor.execute('''
@@ -208,11 +209,11 @@ class TranscriptSearch:
         """
         Batch insert multiple transcripts
         """
-        model = SentenceTransformer('all-MiniLM-L6-v2')
+        # model = SentenceTransformer('all-MiniLM-L6-v2')
         
         # Generate embeddings for all texts
         texts = [t['text'] for t in transcripts]
-        embeddings = model.encode(texts)
+        embeddings = self.model.encode(texts)
         
         # Prepare data for batch insert
         data = []
@@ -305,8 +306,8 @@ class TranscriptSearch:
                 filters['subjects'] = list(set(filters['subjects'] + found_subjects))
 
         # Generate embedding for semantic search
-        model = SentenceTransformer('all-MiniLM-L6-v2')
-        search_embedding = model.encode(search_text)
+        # model = SentenceTransformer('all-MiniLM-L6-v2')
+        search_embedding = self.model.encode(search_text)
         
         # Build the query
         query = '''
@@ -441,10 +442,13 @@ class TranscriptSearch:
         db_subjects = [row[0] for row in self.cursor.fetchall() if row[0] is not None]
         
         # Create a dictionary mapping display names to values for subjects found in the database
-        subjects_dict = {k: v for k, v in ALL_SUBJECTS.items() if v in db_subjects}
-        
-        # Sort by display name and get the values in alphabetical order
-        subjects = [v for k, v in sorted(subjects_dict.items(), key=lambda x: x[0].lower())]
+        # Find display string by matching value in ALL_SUBJECTS
+        subjects = {}
+        for db_subject in db_subjects:
+            for display_str, value in ALL_SUBJECTS.items():
+                if value == db_subject:
+                    subjects[display_str] = value
+                    break
 
         return {
             "speakers": speakers,

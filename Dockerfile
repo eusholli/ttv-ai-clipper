@@ -79,6 +79,9 @@ COPY backend/ .
 COPY r2_manager.py .
 COPY transcript_metadata.pkl .
 COPY transcript_search.index .
+COPY transcript_search.py .
+COPY video_utils.py .
+COPY urls.zip .
 
 # Configure Nginx
 COPY nginx.conf /etc/nginx/nginx.conf

@@ -117,7 +117,7 @@ const MainContent = () => {
     dates: [],
     titles: [],
     companies: [],
-    subjects: []
+    subjects: {}
   })
   const [selectedFilters, setSelectedFilters] = useState({
     selected_speaker: [],
@@ -248,16 +248,25 @@ const MainContent = () => {
   // Handle filter selection
   const handleFilterChange = (filterType, value) => {
     setSelectedFilters(prev => {
-      const currentValues = prev[filterType]
-      const valueIndex = currentValues.indexOf(value)
-      
-      const newFilters = valueIndex === -1
-        ? { ...prev, [filterType]: [...currentValues, value] }
-        : { ...prev, [filterType]: currentValues.filter((_, index) => index !== valueIndex) };
-      
+      const currentValues = prev[filterType];
+      let newValues;
+
+      if (filterType === 'selected_subject') {
+        // For subjects, we store the display string in the UI but use the value for filtering
+        const subjectValue = filters.subjects[value];
+        const valueIndex = currentValues.indexOf(subjectValue);
+        newValues = valueIndex === -1
+          ? [...currentValues, subjectValue]
+          : currentValues.filter((_, index) => index !== valueIndex);
+      } else {
+        const valueIndex = currentValues.indexOf(value);
+        newValues = valueIndex === -1
+          ? [...currentValues, value]
+          : currentValues.filter((_, index) => index !== valueIndex);
+      }
+
       setOpenDropdown(null);
-      
-      return newFilters;
+      return { ...prev, [filterType]: newValues };
     });
   }
 
@@ -280,10 +289,18 @@ const MainContent = () => {
 
   // Remove selected filter
   const removeFilter = (filterType, value) => {
-    setSelectedFilters(prev => ({
-      ...prev,
-      [filterType]: prev[filterType].filter(item => item !== value)
-    }));
+    setSelectedFilters(prev => {
+      if (filterType === 'selected_subject') {
+        // For subjects, we need to find the display string that matches this value
+        const displayString = Object.entries(filters.subjects)
+          .find(([_, v]) => v === value)?.[0];
+        if (!displayString) return prev;
+      }
+      return {
+        ...prev,
+        [filterType]: prev[filterType].filter(item => item !== value)
+      };
+    });
   }
 
   const filterMappings = {
@@ -291,7 +308,12 @@ const MainContent = () => {
     selected_date: { label: 'Dates', values: filters.dates },
     selected_title: { label: 'Titles', values: filters.titles },
     selected_company: { label: 'Companies', values: filters.companies },
-    selected_subject: { label: 'Subjects', values: filters.subjects }
+    selected_subject: { 
+      label: 'Subjects', 
+      values: Object.keys(filters.subjects || {}),
+      getDisplayValue: (key) => key,
+      getValue: (key) => filters.subjects[key]
+    }
   }
 
   // Handle key press for search input
@@ -299,6 +321,12 @@ const MainContent = () => {
     if (e.key === 'Enter') {
       handleSearch();
     }
+  }
+
+  // Get display string for a subject value
+  const getSubjectDisplayString = (value) => {
+    const entry = Object.entries(filters.subjects).find(([_, v]) => v === value);
+    return entry ? entry[0] : value;
   }
 
   return (
@@ -322,7 +350,7 @@ const MainContent = () => {
         </div>
 
         <div className="filters-container" ref={filtersRef}>
-          {Object.entries(filterMappings).map(([filterType, { label, values }]) => (
+          {Object.entries(filterMappings).map(([filterType, { label, values, getDisplayValue }]) => (
             <div key={filterType} className="filter-group">
               <label className="filter-label">{label}</label>
               <div className="filter-dropdown">
@@ -334,28 +362,39 @@ const MainContent = () => {
                 </button>
                 {openDropdown === filterType && (
                   <div className="dropdown-content">
-                    {values.map(value => (
-                      <div 
-                        key={value}
-                        className={`dropdown-item ${selectedFilters[filterType].includes(value) ? 'selected' : ''}`}
-                        onClick={() => handleFilterChange(filterType, value)}
-                      >
-                        {value}
-                      </div>
-                    ))}
+                    {values.map(value => {
+                      const displayValue = getDisplayValue ? getDisplayValue(value) : value;
+                      const selectedValue = filterType === 'selected_subject' 
+                        ? filters.subjects[value]
+                        : value;
+                      return (
+                        <div 
+                          key={value}
+                          className={`dropdown-item ${selectedFilters[filterType].includes(selectedValue) ? 'selected' : ''}`}
+                          onClick={() => handleFilterChange(filterType, value)}
+                        >
+                          {displayValue}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
               <div className="selected-filters">
-                {selectedFilters[filterType].map(value => (
-                  <span 
-                    key={value} 
-                    className="filter-tag"
-                    onClick={() => removeFilter(filterType, value)}
-                  >
-                    {value} ×
-                  </span>
-                ))}
+                {selectedFilters[filterType].map(value => {
+                  const displayValue = filterType === 'selected_subject'
+                    ? getSubjectDisplayString(value)
+                    : value;
+                  return (
+                    <span 
+                      key={value} 
+                      className="filter-tag"
+                      onClick={() => removeFilter(filterType, value)}
+                    >
+                      {displayValue} ×
+                    </span>
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -395,7 +434,7 @@ const MainContent = () => {
                   <p className="result-text">{result.text}</p>
                   {result.subjects && (
                     <div className="result-tags">
-                      Tags: {result.subjects.join(', ')}
+                      Tags: {result.subjects.map(subject => getSubjectDisplayString(subject)).join(', ')}
                     </div>
                   )}
                 </div>
