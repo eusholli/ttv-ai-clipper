@@ -1,10 +1,13 @@
 #!/bin/sh
 
-VERSION="0.0.4"
+VERSION="0.0.5"
 DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+# Enable BuildKit
+export DOCKER_BUILDKIT=1
+
 # Create a backup of the original Dockerfile
-cp Dockerfile Dockerfile.bak
+# cp Dockerfile Dockerfile.bak
 
 # Replace ARG lines with hardcoded values
 sed -i '' \

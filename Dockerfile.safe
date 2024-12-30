@@ -12,7 +12,7 @@ FROM python:3.11-slim
 
 # Build-time arguments for versioning
 ARG BUILD_VERSION="0.0.5"
-ARG BUILD_DATE="2024-12-29T23:18:12Z"
+ARG BUILD_DATE="2024-12-29T15:34:25Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
@@ -47,22 +47,7 @@ RUN apt-get update && \
         g++ \
         && rm -rf /var/lib/apt/lists/*
 
-# Setup Python environment
-ENV VIRTUAL_ENV=/app/venv
-RUN python3 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-
-# Setup backend
-# Install slow packages first - this layer will be cached
-COPY backend/requirements-slow.txt .
-RUN pip install --no-cache-dir -r requirements-slow.txt && \
-    python -m spacy download en_core_web_sm
-
-# Install remaining requirements
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-    # Create required directories with proper permissions
+# Create required directories with proper permissions
 RUN mkdir -p /var/run/postgresql /var/log/postgresql /var/log/nginx /var/log/fastapi && \
     chown -R postgres:postgres /var/run/postgresql /var/log/postgresql && \
     touch /var/log/fastapi/access.log /var/log/fastapi/error.log && \
@@ -81,11 +66,22 @@ RUN mkdir -p /var/lib/postgresql/data && \
     echo "maintenance_work_mem = 64MB" >> /var/lib/postgresql/data/postgresql.conf && \
     echo "effective_cache_size = 384MB" >> /var/lib/postgresql/data/postgresql.conf
 
+# Setup Python environment
+ENV VIRTUAL_ENV=/app/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
 # Copy frontend build
 COPY --from=frontend-build /frontend/dist /app/static
 
+# Setup backend
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -m spacy download en_core_web_sm
 COPY backend/ .
 COPY r2_manager.py .
+COPY transcript_metadata.pkl .
+COPY transcript_search.index .
 COPY transcript_search.py .
 COPY video_utils.py .
 COPY urls.zip .

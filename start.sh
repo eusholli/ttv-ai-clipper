@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -x
 
 # Function to check if PostgreSQL is ready
 wait_for_postgres() {
@@ -37,16 +37,16 @@ init_database
 echo "Starting FastAPI..."
 . /app/venv/bin/activate
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4 --log-level info \
-    --access-log /var/log/fastapi/access.log \
     --log-config /app/logging.conf &
 
 # Wait for FastAPI to start
 echo "Waiting for FastAPI to start..."
-while ! curl -s http://localhost:8000/health > /dev/null; do
+while ! curl -s http://localhost:8000/api/version > /dev/null; do
     sleep 1
 done
 echo "FastAPI is ready!"
 
 # Start Nginx
 echo "Starting Nginx..."
-nginx -g "daemon off;" &
+nginx -g "daemon off;" 2>/var/log/nginx/error.log
+

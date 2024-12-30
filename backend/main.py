@@ -3,18 +3,13 @@ import os
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from sentence_transformers import SentenceTransformer
-import faiss
-import pickle
-import numpy as np
-from typing import Dict, List, Optional
+from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 from dotenv import load_dotenv
 from r2_manager import R2Manager
 import stripe
 from typing import Optional
-import json
 from transcript_search import TranscriptSearch
 
 # Load environment variables

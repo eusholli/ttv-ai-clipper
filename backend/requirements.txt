@@ -1,16 +1,12 @@
-# backend/requirements.txt
-fastapi
 uvicorn
+fastapi
 python-dotenv
-sentence-transformers
-faiss-cpu
 numpy
 pydantic
 boto3
 stripe
 psycopg2-binary
 python-json-logger
-spacy
 playwright
 backoff
 bs4
