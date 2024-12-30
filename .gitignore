@@ -94,3 +94,6 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Project specific ignore
+cache/
