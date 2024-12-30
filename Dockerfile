@@ -85,9 +85,6 @@ RUN mkdir -p /var/lib/postgresql/data && \
 COPY --from=frontend-build /frontend/dist /app/static
 
 COPY backend/ .
-COPY r2_manager.py .
-COPY transcript_search.py .
-COPY video_utils.py .
 COPY urls.zip .
 
 # Configure Nginx

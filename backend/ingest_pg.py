@@ -5,7 +5,7 @@ import os
 import traceback
 import backoff
 import zipfile
-from r2_manager import R2Manager
+from .r2_manager import R2Manager
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
@@ -13,7 +13,7 @@ from typing import Dict, List, Set, Optional, Tuple
 from pathlib import Path
 from bs4 import BeautifulSoup, NavigableString
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-from video_utils import get_youtube_video, generate_clips
+from .video_utils import get_youtube_video, generate_clips
 from transcript_search import extract_subject_info, TranscriptSearch
 import logging
 import logging.handlers

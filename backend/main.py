@@ -7,10 +7,10 @@ from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 from dotenv import load_dotenv
-from r2_manager import R2Manager
+from .r2_manager import R2Manager
 import stripe
 from typing import Optional
-from transcript_search import TranscriptSearch
+from .transcript_search import TranscriptSearch
 
 # Load environment variables
 load_dotenv()
