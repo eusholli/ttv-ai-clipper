@@ -19,7 +19,7 @@ def read_env_file(env_path='.env.local'):
 def build_docker_command(image_name, env_vars, port_mapping):
     """Build docker run command with environment variables."""
     env_flags = ' '.join(f'-e {key}={value}' for key, value in env_vars.items())
-    return f"docker run {env_flags} {port_mapping} {image_name}"
+    return f"docker run -d {env_flags} {port_mapping} {image_name}"
 
 def main():
     # Configuration
