@@ -187,7 +187,7 @@ const MainContent = () => {
     if (searchQuery || Object.values(selectedFilters).some(arr => arr.length > 0)) {
       handleSearch();
     }
-  }, [selectedFilters, searchQuery]);
+  }, [selectedFilters]);
 
   // Validate and adjust number of results
   const validateNumResults = (value) => {
