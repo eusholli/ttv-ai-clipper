@@ -2,10 +2,13 @@ import psycopg2
 from psycopg2.extras import execute_values
 from sentence_transformers import SentenceTransformer
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import os
 from dotenv import load_dotenv
 import spacy
+import torch
+from torch.quantization import quantize_dynamic
+
 
 # Initialize spaCy model
 nlp = spacy.load("en_core_web_sm")
@@ -40,6 +43,40 @@ ALL_SUBJECTS = {
     "QoS (Quality of Service)": "qos",
     "SLA (Service Level Agreement)": "sla"
 }
+
+def create_quantized_transformer():
+    """Create a quantized sentence transformer model"""
+    model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
+    
+    # Quantize the model
+    if not torch.cuda.is_available():  # Only quantize for CPU
+        # Get the underlying transformer model
+        transformer_model = model.get_sentence_embedding_dimension()
+        if hasattr(model, 'auto_model'):
+            # Quantize the linear layers dynamically
+            model.auto_model = quantize_dynamic(
+                model.auto_model,
+                {torch.nn.Linear},
+                dtype=torch.qint8
+            )
+    
+    return model
+
+def create_quantized_spacy():
+    """Load and optimize spaCy model"""
+    # You can install the quantized model with:
+    # python -m spacy download en_core_web_sm
+    
+    # Load the smallest model
+    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner", "textcat"])
+    
+    # Remove unnecessary pipes
+    pipes_to_remove = ["tok2vec", "tagger"]
+    for pipe in pipes_to_remove:
+        if pipe in nlp.pipe_names:
+            nlp.remove_pipe(pipe)
+    
+    return nlp
 
 def extract_subject_info(text: str) -> List[str]:
     # Process input text
@@ -110,7 +147,27 @@ class TranscriptSearch:
         
         # Initialize filter values
         self._filter_values = self._fetch_filter_values()
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        # Initialize quantized models
+        self.nlp = create_quantized_spacy()
+        self.model = create_quantized_transformer()
+        
+        # Set up model for inference mode
+        self.model.eval()  # Set to evaluation mode
+        torch.set_grad_enabled(False)  # Disable gradient computation
+ 
+    def encode_text(self, text: Union[str, List[str]]) -> List[float]:
+        """Encode text with quantized model"""
+        # Use the smaller int8 model for inference
+        with torch.inference_mode():
+            embedding = self.model.encode(
+                text,
+                convert_to_tensor=False,  # Keep as numpy array
+                normalize_embeddings=True  # Normalize to save memory
+            )
+            # Handle both single text and list of texts
+            if isinstance(embedding, list):
+                return embedding
+            return embedding.tolist()
 
     def create_schema(self):
         """Create the database schema with proper indexes"""
@@ -178,7 +235,8 @@ class TranscriptSearch:
         """
         # Generate embedding
         # model = SentenceTransformer('all-MiniLM-L6-v2')
-        embedding = self.model.encode(text)
+        # Generate embedding using quantized model
+        embedding = self.encode_text(text)
 
         try:
             self.cursor.execute('''
@@ -197,7 +255,7 @@ class TranscriptSearch:
             ''', (
                 segment_hash, title, date, youtube_id, source, speaker, company,
                 start_time, end_time, duration, subjects, download, text,
-                embedding.tolist(),
+                embedding,
                 title, speaker, company, text
             ))
             self.conn.commit()
@@ -213,7 +271,7 @@ class TranscriptSearch:
         
         # Generate embeddings for all texts
         texts = [t['text'] for t in transcripts]
-        embeddings = self.model.encode(texts)
+        embeddings = self.encode_text(texts)
         
         # Prepare data for batch insert
         data = []
@@ -232,7 +290,7 @@ class TranscriptSearch:
                 transcript.get('subjects'),
                 transcript.get('download'),
                 transcript['text'],
-                embedding.tolist(),
+                embedding,
                 # Concatenate fields for full-text search
                 f"{transcript['title']} {transcript['speaker']} {transcript.get('company', '')} {transcript['text']}"
             ))
@@ -307,7 +365,7 @@ class TranscriptSearch:
 
         # Generate embedding for semantic search
         # model = SentenceTransformer('all-MiniLM-L6-v2')
-        search_embedding = self.model.encode(search_text)
+        search_embedding = self.encode_text(search_text)
         
         # Build the query
         query = '''
@@ -337,7 +395,7 @@ class TranscriptSearch:
         
         params = [
             semantic_weight,
-            search_embedding.tolist(),
+            search_embedding,
             1 - semantic_weight,
             search_text
         ]
