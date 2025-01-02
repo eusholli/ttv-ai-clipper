@@ -15,28 +15,23 @@ steps:
     id: 'push'
     waitFor: ['build']
 
-  # Create VPC connector if it doesn't exist (without --async to ensure completion)
+  # Create VPC connector if it doesn't exist
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: gcloud
+    entrypoint: 'bash'
     args:
-    - 'compute'
-    - 'networks'
-    - 'vpc-access'
-    - 'connectors'
-    - 'create'
-    - 'ttv-connector'
-    - '--network'
-    - 'default'
-    - '--region'
-    - 'us-central1'
-    - '--range'
-    - '10.8.0.0/28'
-    - '--min-instances'
-    - '2'
-    - '--max-instances'
-    - '3'
-    - '--machine-type'
-    - 'e2-micro'
+    - '-c'
+    - |
+      if ! gcloud compute networks vpc-access connectors describe ttv-connector --region=us-central1 2>/dev/null; then
+        gcloud compute networks vpc-access connectors create ttv-connector \
+          --network=default \
+          --region=us-central1 \
+          --range=10.8.0.0/28 \
+          --min-instances=2 \
+          --max-instances=3 \
+          --machine-type=e2-micro
+      else
+        echo "VPC connector 'ttv-connector' already exists in us-central1"
+      fi
     id: 'create-vpc'
     waitFor: ['push']
     
