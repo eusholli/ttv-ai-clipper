@@ -1,6 +1,7 @@
 import os
 import logging
 from pathlib import Path
+from functools import lru_cache
 from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import ClientError
@@ -29,23 +30,25 @@ class R2Manager:
                    self.secret_access_key, self.bucket_name]):
             raise ValueError("Missing required credentials. Check environment variables.")
         
-        # Initialize R2 client
-        self.s3_client = self._initialize_r2_client()
+        # s3_client will be initialized lazily
+        self._s3_client = None
 
-    def _initialize_r2_client(self):
-        """Initialize the R2 client with credentials"""
-        
-        endpoint=f'https://{self.account_id}.r2.cloudflarestorage.com',
-        logger.info(f"Connecting to endpoint: {endpoint}")
+    @property
+    def s3_client(self):
+        """Lazy initialization of R2 client"""
+        if self._s3_client is None:
+            endpoint = f'https://{self.account_id}.r2.cloudflarestorage.com'
+            logger.info(f"Connecting to endpoint: {endpoint}")
+            self._s3_client = boto3.client(
+                service_name='s3',
+                endpoint_url=endpoint,
+                aws_access_key_id=self.access_key_id,
+                aws_secret_access_key=self.secret_access_key,
+                region_name='auto'  # R2 doesn't use regions, but boto3 requires this
+            )
+        return self._s3_client
 
-        return boto3.client(
-            service_name='s3',
-            endpoint_url=endpoint,
-            aws_access_key_id=self.access_key_id,
-            aws_secret_access_key=self.secret_access_key,
-            region_name='auto'  # R2 doesn't use regions, but boto3 requires this
-        )
-
+    @lru_cache(maxsize=128)
     def get_total_space_used(self) -> int:
         """
         Calculate total space used in the R2 bucket
@@ -85,7 +88,9 @@ class R2Manager:
             logger.error(f"Error checking file existence: {str(e)}")
             raise
 
-    def _get_content_type(self, file_path: str) -> str:
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def _get_content_type(file_path: str) -> str:
         """Determine content type based on file extension"""
         extension = Path(file_path).suffix.lower()
         content_types = {
@@ -149,6 +154,7 @@ class R2Manager:
             logger.error(f"Upload failed: {str(e)}")
             return False
 
+    @lru_cache(maxsize=128)
     def list_videos(self):
         """
         List all videos in the bucket

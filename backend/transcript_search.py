@@ -10,9 +10,6 @@ import torch
 from torch.quantization import quantize_dynamic
 
 
-# Initialize spaCy model
-nlp = spacy.load("en_core_web_sm")
-
 ALL_SUBJECTS = {
     # Notable Technical Terms
     "Bandwidth": "bandwidth",
@@ -44,41 +41,7 @@ ALL_SUBJECTS = {
     "SLA (Service Level Agreement)": "sla"
 }
 
-def create_quantized_transformer():
-    """Create a quantized sentence transformer model"""
-    model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
-    
-    # Quantize the model
-    if not torch.cuda.is_available():  # Only quantize for CPU
-        # Get the underlying transformer model
-        transformer_model = model.get_sentence_embedding_dimension()
-        if hasattr(model, 'auto_model'):
-            # Quantize the linear layers dynamically
-            model.auto_model = quantize_dynamic(
-                model.auto_model,
-                {torch.nn.Linear},
-                dtype=torch.qint8
-            )
-    
-    return model
-
-def create_quantized_spacy():
-    """Load and optimize spaCy model"""
-    # You can install the quantized model with:
-    # python -m spacy download en_core_web_sm
-    
-    # Load the smallest model
-    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner", "textcat"])
-    
-    # Remove unnecessary pipes
-    pipes_to_remove = ["tok2vec", "tagger"]
-    for pipe in pipes_to_remove:
-        if pipe in nlp.pipe_names:
-            nlp.remove_pipe(pipe)
-    
-    return nlp
-
-def extract_subject_info(text: str) -> List[str]:
+def extract_subject_info(text: str, nlp) -> List[str]:
     # Process input text
     text_doc = nlp(text.lower())
     
@@ -147,14 +110,61 @@ class TranscriptSearch:
         
         # Initialize filter values
         self._filter_values = self._fetch_filter_values()
-        # Initialize quantized models
-        self.nlp = create_quantized_spacy()
-        self.model = create_quantized_transformer()
+        # Initialize models as None for lazy loading
+        self._nlp = None
+        self._model = None
+ 
+    @staticmethod
+    def _create_quantized_transformer():
+        """Create a quantized sentence transformer model"""
+        model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
+        
+        # Quantize the model
+        if not torch.cuda.is_available():  # Only quantize for CPU
+            # Get the underlying transformer model
+            transformer_model = model.get_sentence_embedding_dimension()
+            if hasattr(model, 'auto_model'):
+                # Quantize the linear layers dynamically
+                model.auto_model = quantize_dynamic(
+                    model.auto_model,
+                    {torch.nn.Linear},
+                    dtype=torch.qint8
+                )
         
         # Set up model for inference mode
-        self.model.eval()  # Set to evaluation mode
+        model.eval()  # Set to evaluation mode
         torch.set_grad_enabled(False)  # Disable gradient computation
- 
+        
+        return model
+
+    @staticmethod
+    def _create_quantized_spacy():
+        """Load and optimize spaCy model"""
+        # Load the smallest model
+        nlp = spacy.load("en_core_web_sm", disable=["parser", "ner", "textcat"])
+        
+        # Remove unnecessary pipes
+        pipes_to_remove = ["tok2vec", "tagger"]
+        for pipe in pipes_to_remove:
+            if pipe in nlp.pipe_names:
+                nlp.remove_pipe(pipe)
+        
+        return nlp
+
+    @property
+    def nlp(self):
+        """Lazy initialization of spaCy model"""
+        if self._nlp is None:
+            self._nlp = self._create_quantized_spacy()
+        return self._nlp
+
+    @property
+    def model(self):
+        """Lazy initialization of transformer model"""
+        if self._model is None:
+            self._model = self._create_quantized_transformer()
+        return self._model
+
     def encode_text(self, text: Union[str, List[str]]) -> List[float]:
         """Encode text with quantized model"""
         # Use the smaller int8 model for inference
@@ -356,7 +366,7 @@ class TranscriptSearch:
                 else:
                     filters[filter_name] = list(set(filters[filter_name] + found_values))
         
-        found_subjects = extract_subject_info(search_text_lower)
+        found_subjects = extract_subject_info(search_text_lower, self.nlp)
         if found_subjects:
             if 'subjects' not in filters:
                 filters['subjects'] = found_subjects
