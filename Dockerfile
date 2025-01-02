@@ -41,9 +41,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # RUN playwright install-deps
 
     # Create required directories with proper permissions
-RUN mkdir -p /var/log/nginx /var/log/fastapi && \
+RUN mkdir -p /var/log/nginx /var/log/fastapi /var/log/postgresql && \
     touch /var/log/fastapi/access.log /var/log/fastapi/error.log && \
-    chown -R www-data:www-data /var/log/nginx /var/log/fastapi
+    chown -R www-data:www-data /var/log/nginx /var/log/fastapi /var/log/postgresql
 
 # Copy frontend build
 COPY --from=frontend-build /frontend/dist /app/static
