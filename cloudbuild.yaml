@@ -1,0 +1,63 @@
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA', '.']
+  
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA']
+  
+  # Deploy container image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+    - 'run'
+    - 'deploy'
+    - 'ttv-ai-clipper'
+    - '--image'
+    - 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA'
+    - '--region'
+    - 'us-central1'
+    - '--platform'
+    - 'managed'
+    - '--allow-unauthenticated'
+    - '--memory'
+    - '2Gi'
+    - '--cpu'
+    - '2'
+    - '--min-instances'
+    - '1'
+    - '--max-instances'
+    - '10'
+    - '--set-env-vars'
+    - 'NODE_ENV=production'
+    - '--update-secrets'
+    - 'CLOUDFLARE_ACCOUNT_ID=CLOUDFLARE_ACCOUNT_ID:latest'
+    - '--update-secrets'
+    - 'CLOUDFLARE_TOKEN_ID=CLOUDFLARE_TOKEN_ID:latest'
+    - '--update-secrets'
+    - 'CLOUDFLARE_ACCESS_KEY_ID=CLOUDFLARE_ACCESS_KEY_ID:latest'
+    - '--update-secrets'
+    - 'CLOUDFLARE_SECRET_ACCESS_KEY=CLOUDFLARE_SECRET_ACCESS_KEY:latest'
+    - '--update-secrets'
+    - 'CLOUDFLARE_BUCKET_NAME=CLOUDFLARE_BUCKET_NAME:latest'
+    - '--update-secrets'
+    - 'STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest'
+    - '--update-secrets'
+    - 'STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest'
+    - '--update-secrets'
+    - 'FRONTEND_URL=FRONTEND_URL:latest'
+    - '--update-secrets'
+    - 'DB_NAME=DB_NAME:latest'
+    - '--update-secrets'
+    - 'DB_USER=DB_USER:latest'
+    - '--update-secrets'
+    - 'DB_PWD=DB_PWD:latest'
+    - '--update-secrets'
+    - 'DB_HOST=DB_HOST:latest'
+
+images:
+  - 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
