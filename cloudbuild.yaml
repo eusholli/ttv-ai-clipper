@@ -61,8 +61,23 @@ steps:
     - '--set-secrets'
     - 'DB_HOST=DB_HOST:latest'
 
-images:
+  # Add this new step to set IAM policy
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+    - 'run'
+    - 'services'
+    - 'add-iam-policy-binding'
+    - 'ttv-ai-clipper'
+    - '--region=us-central1'
+    - '--member=allUsers'
+    - '--role=roles/run.invoker'
+    
+    images:
   - 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA'
 
 options:
   logging: CLOUD_LOGGING_ONLY
+  # Add GitHub reporting configuration
+  githubAppId: c5e0dc09-3236-4aef-9238-eacb1604f7ef
+  report: true
