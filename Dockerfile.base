@@ -2,11 +2,14 @@
 FROM python:3.11-slim
 WORKDIR /app
 
-# Set noninteractive frontend
+# Set noninteractive frontend and configure apt
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+RUN echo 'APT::Install-Suggests "0";' >> /etc/apt/apt.conf.d/00-docker \
+    && echo 'APT::Install-Recommends "0";' >> /etc/apt/apt.conf.d/00-docker
 
 # Install PostgreSQL and other dependencies in a single layer
-RUN apt-get update && \
+RUN apt-get update && apt-get install -y apt-utils && \
     apt-get install -y vim curl gnupg2 lsb-release && \
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/postgresql.list && \
