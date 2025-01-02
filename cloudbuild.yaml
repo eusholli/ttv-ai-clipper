@@ -11,8 +11,50 @@ steps:
   # Push the container image to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA']
-  
-    # Add this new step to set IAM policy
+
+  # Create VPC connector if it doesn't exist (without --async to ensure completion)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+    - 'compute'
+    - 'networks'
+    - 'vpc-access'
+    - 'connectors'
+    - 'create'
+    - 'ttv-connector'
+    - '--network'
+    - 'default'
+    - '--region'
+    - 'us-central1'
+    - '--range'
+    - '10.8.0.0/28'
+    - '--min-instances'
+    - '2'
+    - '--max-instances'
+    - '3'
+    - '--machine-type'
+    - 'e2-micro'
+    id: 'create-vpc'
+    waitFor: ['push']
+    
+  # Add firewall rule for all outbound traffic
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+    - 'compute'
+    - 'firewall-rules'
+    - 'create'
+    - 'allow-all-egress'
+    - '--direction=EGRESS'
+    - '--priority=1000'
+    - '--network=default'
+    - '--action=ALLOW'
+    - '--rules=tcp:80,tcp:443,tcp:5432'
+    - '--destination-ranges=0.0.0.0/0'
+    - '--target-tags=cloudsql-proxy'
+    waitFor: ['create-vpc']
+    
+  # Add this new step to set IAM policy
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -24,6 +66,7 @@ steps:
     - '--region=us-central1'
     - '--member=allUsers'
     - '--role=roles/run.invoker'
+    waitFor: ['create-vpc']
   
   # Deploy container image to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -47,6 +90,10 @@ steps:
     - '1'
     - '--max-instances'
     - '10'
+    - '--vpc-connector'
+    - 'ttv-connector'
+    - '--vpc-egress'
+    - 'all-traffic'
     - '--set-env-vars'
     - 'NODE_ENV=production'
     - '--set-secrets'
@@ -73,6 +120,7 @@ steps:
     - 'DB_PWD=DB_PWD:latest'
     - '--set-secrets'
     - 'DB_HOST=DB_HOST:latest'
+    waitFor: ['create-vpc']
     
 images:
   - 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA'
