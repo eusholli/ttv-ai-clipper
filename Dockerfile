@@ -12,7 +12,7 @@ FROM python:3.11-slim
 
 # Build-time arguments for versioning
 ARG BUILD_VERSION="0.0.5"
-ARG BUILD_DATE="2025-01-02T08:48:45Z"
+ARG BUILD_DATE="2025-01-02T10:03:24Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
@@ -24,39 +24,15 @@ LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
 # Set version as environment variable
 ENV APP_VERSION=${BUILD_VERSION}
 
+# Final stage
+FROM eusholli/ttv-ai-clipper-base:latest
+
 WORKDIR /app
-
-# Set noninteractive frontend
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install PostgreSQL and other dependencies in a single layer
-RUN apt-get update && \
-    apt-get install -y vim curl gnupg2 lsb-release && \
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/postgresql.list && \
-    apt-get update && \
-    apt-get install -y \
-        nginx \
-        postgresql-16 \
-        postgresql-client-16 \
-        postgresql-16-pgvector \
-        python3-venv \
-        procps \
-        build-essential \
-        gcc \
-        g++ \
-        && rm -rf /var/lib/apt/lists/*
 
 # Setup Python environment
 ENV VIRTUAL_ENV=/app/venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-
-# Setup backend
-# Install slow packages first - this layer will be cached
-COPY backend/requirements-slow.txt .
-RUN pip install --no-cache-dir -r requirements-slow.txt && \
-    python -m spacy download en_core_web_sm
 
 # Install remaining requirements
 COPY backend/requirements.txt .

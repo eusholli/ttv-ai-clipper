@@ -48,4 +48,4 @@ echo "FastAPI is ready!"
 
 # Start Nginx
 echo "Starting Nginx..."
-nginx -g "daemon off;" 2>/var/log/nginx/error.log &
+nginx -g "daemon off;" 2>/var/log/nginx/error.log 
