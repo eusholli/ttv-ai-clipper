@@ -35,21 +35,24 @@ steps:
     id: 'create-vpc'
     waitFor: ['push']
     
-  # Add firewall rule for all outbound traffic
+  # Add firewall rule for all outbound traffic if it doesn't exist
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: gcloud
+    entrypoint: 'bash'
     args:
-    - 'compute'
-    - 'firewall-rules'
-    - 'create'
-    - 'allow-all-egress'
-    - '--direction=EGRESS'
-    - '--priority=1000'
-    - '--network=default'
-    - '--action=ALLOW'
-    - '--rules=tcp:80,tcp:443,tcp:5432'
-    - '--destination-ranges=0.0.0.0/0'
-    - '--target-tags=cloudsql-proxy'
+    - '-c'
+    - |
+      if ! gcloud compute firewall-rules describe allow-all-egress 2>/dev/null; then
+        gcloud compute firewall-rules create allow-all-egress \
+          --direction=EGRESS \
+          --priority=1000 \
+          --network=default \
+          --action=ALLOW \
+          --rules=tcp:80,tcp:443,tcp:5432 \
+          --destination-ranges=0.0.0.0/0 \
+          --target-tags=cloudsql-proxy
+      else
+        echo "Firewall rule 'allow-all-egress' already exists"
+      fi
     waitFor: ['create-vpc']
     
   # Add this new step to set IAM policy
