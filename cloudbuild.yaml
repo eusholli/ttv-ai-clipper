@@ -7,10 +7,13 @@ steps:
       '-t', 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA',
       '.'
     ]
+    id: 'build'
   
   # Push the container image to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA']
+    id: 'push'
+    waitFor: ['build']
 
   # Create VPC connector if it doesn't exist (without --async to ensure completion)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
