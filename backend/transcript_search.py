@@ -98,7 +98,8 @@ class TranscriptSearch:
             dbname=os.getenv('DB_NAME'),
             user=os.getenv('DB_USER'),
             password=os.getenv('DB_PWD'),
-            host=os.getenv('DB_HOST')
+            host=os.getenv('DB_HOST'),
+            sslmode='require'  # Required for Neon database connections
         )
         self.cursor = self.conn.cursor()
         

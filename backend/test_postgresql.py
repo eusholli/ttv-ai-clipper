@@ -23,7 +23,8 @@ def test_postgresql_connection():
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PWD"),
             host=os.getenv("DB_HOST", "localhost"),
-            port="5432"
+            port="5432",
+            sslmode='require'  # Required for Neon database connections
         )
         print("✓ Successfully connected to PostgreSQL")
 
