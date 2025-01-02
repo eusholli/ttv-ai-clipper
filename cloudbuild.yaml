@@ -12,6 +12,19 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA']
   
+    # Add this new step to set IAM policy
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+    - 'beta'
+    - 'run'
+    - 'services'
+    - 'add-iam-policy-binding'
+    - 'ttv-ai-clipper'
+    - '--region=us-central1'
+    - '--member=allUsers'
+    - '--role=roles/run.invoker'
+  
   # Deploy container image to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
@@ -60,19 +73,6 @@ steps:
     - 'DB_PWD=DB_PWD:latest'
     - '--set-secrets'
     - 'DB_HOST=DB_HOST:latest'
-
-  # Add this new step to set IAM policy
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: gcloud
-    args:
-    - 'beta'
-    - 'run'
-    - 'services'
-    - 'add-iam-policy-binding'
-    - 'ttv-ai-clipper'
-    - '--region=us-central1'
-    - '--member=allUsers'
-    - '--role=roles/run.invoker'
     
 images:
   - 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA'
