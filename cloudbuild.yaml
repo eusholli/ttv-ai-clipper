@@ -121,6 +121,8 @@ steps:
     - 'DB_PWD=DB_PWD:latest'
     - '--set-secrets'
     - 'DB_HOST=DB_HOST:latest'
+    - '--timeout'
+    - '600s'
     waitFor: ['create-vpc']
     
 images:
