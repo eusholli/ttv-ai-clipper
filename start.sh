@@ -11,7 +11,7 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4 --log-level debu
 
 # Wait for FastAPI to be ready
 echo "Waiting for FastAPI to be ready..."
-timeout 30 bash -c 'until curl -s http://localhost:8000/api/filters > /dev/null 2>&1; do sleep 1; done' || {
+timeout 600 bash -c 'until curl -s http://localhost/api/filters > /dev/null 2>&1; do sleep 1; done' || {
     echo "FastAPI failed to start within 30 seconds"
     exit 1
 }
