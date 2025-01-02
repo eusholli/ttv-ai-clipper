@@ -34,9 +34,13 @@ class R2Manager:
 
     def _initialize_r2_client(self):
         """Initialize the R2 client with credentials"""
+        
+        endpoint=f'https://{self.account_id}.r2.cloudflarestorage.com',
+        logger.info(f"Connecting to endpoint: {endpoint}")
+
         return boto3.client(
             service_name='s3',
-            endpoint_url=f'https://{self.account_id}.r2.cloudflarestorage.com',
+            endpoint_url=endpoint,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name='auto'  # R2 doesn't use regions, but boto3 requires this
