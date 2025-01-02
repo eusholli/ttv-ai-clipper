@@ -11,8 +11,8 @@ RUN npm run build
 FROM python:3.11-slim
 
 # Build-time arguments for versioning
-ARG BUILD_VERSION="0.0.5"
-ARG BUILD_DATE="2025-01-02T10:03:24Z"
+ARG BUILD_VERSION="0.0.6"
+ARG BUILD_DATE="2025-01-02T17:41:47Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
@@ -41,23 +41,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # RUN playwright install-deps
 
     # Create required directories with proper permissions
-RUN mkdir -p /var/run/postgresql /var/log/postgresql /var/log/nginx /var/log/fastapi && \
-    chown -R postgres:postgres /var/run/postgresql /var/log/postgresql && \
+RUN mkdir -p /var/log/nginx /var/log/fastapi && \
     touch /var/log/fastapi/access.log /var/log/fastapi/error.log && \
     chown -R www-data:www-data /var/log/nginx /var/log/fastapi
-
-# Initialize PostgreSQL database
-RUN mkdir -p /var/lib/postgresql/data && \
-    chown -R postgres:postgres /var/lib/postgresql/data && \
-    su postgres -c "/usr/lib/postgresql/16/bin/initdb -D /var/lib/postgresql/data" && \
-    echo "host all all 0.0.0.0/0 md5" >> /var/lib/postgresql/data/pg_hba.conf && \
-    echo "listen_addresses='*'" >> /var/lib/postgresql/data/postgresql.conf && \
-    # Add optimized PostgreSQL configuration
-    echo "max_connections = 100" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "shared_buffers = 128MB" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "work_mem = 4MB" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "maintenance_work_mem = 64MB" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "effective_cache_size = 384MB" >> /var/lib/postgresql/data/postgresql.conf
 
 # Copy frontend build
 COPY --from=frontend-build /frontend/dist /app/static
@@ -78,9 +64,8 @@ RUN chmod +x start.sh stop.sh
 
 # logging config
 COPY backend/logging.conf .
-RUN mkdir -p /var/log/fastapi /var/log/postgresql && \
-    chown -R www-data:www-data /var/log/fastapi && \
-    chown -R postgres:postgres /var/log/postgresql
+RUN mkdir -p /var/log/fastapi && \
+    chown -R www-data:www-data /var/log/fastapi
 
 # Create a directory for any temporary files
 RUN mkdir -p /tmp/app && chmod 777 /tmp/app

@@ -65,6 +65,7 @@ steps:
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
+    - 'beta'
     - 'run'
     - 'services'
     - 'add-iam-policy-binding'

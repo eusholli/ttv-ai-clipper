@@ -1,6 +1,6 @@
 #!/bin/sh
 
-VERSION="0.0.5"
+VERSION="0.0.6"
 DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Replace ARG lines with hardcoded values
