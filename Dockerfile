@@ -12,7 +12,7 @@ FROM python:3.11-slim
 
 # Build-time arguments for versioning
 ARG BUILD_VERSION="0.0.5"
-ARG BUILD_DATE="2024-12-29T23:18:12Z"
+ARG BUILD_DATE="2025-01-02T08:48:45Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
@@ -84,8 +84,11 @@ RUN mkdir -p /var/lib/postgresql/data && \
 # Copy frontend build
 COPY --from=frontend-build /frontend/dist /app/static
 
-COPY backend/ .
-COPY urls.zip .
+# Create backend package directory and copy files
+RUN mkdir -p /app/backend
+COPY backend/ /app/backend/
+COPY urls.zip /app/
+ENV PYTHONPATH=/app
 
 # Configure Nginx
 COPY nginx.conf /etc/nginx/nginx.conf
