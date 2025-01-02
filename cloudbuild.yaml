@@ -78,6 +78,3 @@ images:
 
 options:
   logging: CLOUD_LOGGING_ONLY
-  # Add GitHub reporting configuration
-  githubAppId: c5e0dc09-3236-4aef-9238-eacb1604f7ef
-  report: true
