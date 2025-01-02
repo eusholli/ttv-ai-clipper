@@ -1,7 +1,7 @@
 #!/bin/bash -x
 
 # Setup signal handling
-trap 'kill $(jobs -p)' EXIT
+# trap 'kill $(jobs -p)' EXIT
 
 # Start FastAPI
 echo "Starting FastAPI..."
