@@ -11,4 +11,4 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4 --log-level debu
 
 # Start Nginx
 echo "Starting Nginx..."
-nginx -g "daemon off;" 2>/var/log/nginx/error.log &
+nginx -g "daemon off;" 2>/var/log/nginx/error.log

@@ -47,7 +47,7 @@ steps:
           --priority=1000 \
           --network=default \
           --action=ALLOW \
-          --rules=tcp:80,tcp:443,tcp:5432 \
+          --rules=tcp:80,tcp:8000,tcp:443,tcp:5432 \
           --destination-ranges=0.0.0.0/0 \
           --target-tags=cloudsql-proxy
       else
