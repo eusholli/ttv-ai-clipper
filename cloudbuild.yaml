@@ -36,61 +36,33 @@ steps:
     - '10'
     - '--set-env-vars'
     - 'NODE_ENV=production'
-    - '--update-secrets'
-    - 'CLOUDFLARE_ACCOUNT_ID=CLOUDFLARE_ACCOUNT_ID:latest'
-    - '--update-secrets'
-    - 'CLOUDFLARE_TOKEN_ID=CLOUDFLARE_TOKEN_ID:latest'
-    - '--update-secrets'
-    - 'CLOUDFLARE_ACCESS_KEY_ID=CLOUDFLARE_ACCESS_KEY_ID:latest'
-    - '--update-secrets'
-    - 'CLOUDFLARE_SECRET_ACCESS_KEY=CLOUDFLARE_SECRET_ACCESS_KEY:latest'
-    - '--update-secrets'
-    - 'CLOUDFLARE_BUCKET_NAME=CLOUDFLARE_BUCKET_NAME:latest'
-    - '--update-secrets'
-    - 'STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest'
-    - '--update-secrets'
-    - 'STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest'
-    - '--update-secrets'
-    - 'FRONTEND_URL=FRONTEND_URL:latest'
-    - '--update-secrets'
-    - 'DB_NAME=DB_NAME:latest'
-    - '--update-secrets'
-    - 'DB_USER=DB_USER:latest'
-    - '--update-secrets'
-    - 'DB_PWD=DB_PWD:latest'
-    - '--update-secrets'
-    - 'DB_HOST=DB_HOST:latest'
+    - '--set-secrets'
+    - 'CLOUDFLARE_ACCOUNT_ID=projects/$PROJECT_ID/secrets/CLOUDFLARE_ACCOUNT_ID:latest'
+    - '--set-secrets'
+    - 'CLOUDFLARE_TOKEN_ID=projects/$PROJECT_ID/secrets/CLOUDFLARE_TOKEN_ID:latest'
+    - '--set-secrets'
+    - 'CLOUDFLARE_ACCESS_KEY_ID=projects/$PROJECT_ID/secrets/CLOUDFLARE_ACCESS_KEY_ID:latest'
+    - '--set-secrets'
+    - 'CLOUDFLARE_SECRET_ACCESS_KEY=projects/$PROJECT_ID/secrets/CLOUDFLARE_SECRET_ACCESS_KEY:latest'
+    - '--set-secrets'
+    - 'CLOUDFLARE_BUCKET_NAME=projects/$PROJECT_ID/secrets/CLOUDFLARE_BUCKET_NAME:latest'
+    - '--set-secrets'
+    - 'STRIPE_SECRET_KEY=projects/$PROJECT_ID/secrets/STRIPE_SECRET_KEY:latest'
+    - '--set-secrets'
+    - 'STRIPE_WEBHOOK_SECRET=projects/$PROJECT_ID/secrets/STRIPE_WEBHOOK_SECRET:latest'
+    - '--set-secrets'
+    - 'FRONTEND_URL=projects/$PROJECT_ID/secrets/FRONTEND_URL:latest'
+    - '--set-secrets'
+    - 'DB_NAME=projects/$PROJECT_ID/secrets/DB_NAME:latest'
+    - '--set-secrets'
+    - 'DB_USER=projects/$PROJECT_ID/secrets/DB_USER:latest'
+    - '--set-secrets'
+    - 'DB_PWD=projects/$PROJECT_ID/secrets/DB_PWD:latest'
+    - '--set-secrets'
+    - 'DB_HOST=projects/$PROJECT_ID/secrets/DB_HOST:latest'
 
 images:
   - 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA'
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
-serviceAccount: 'projects/$PROJECT_ID/serviceAccounts/921656223812-compute@developer.gserviceaccount.com'
-availableSecrets:
-  secretManager:
-    - versionName: projects/$PROJECT_ID/secrets/DB_HOST/latest
-      env: 'DB_HOST'
-    - versionName: projects/$PROJECT_ID/secrets/DB_NAME/latest
-      env: 'DB_NAME'
-    - versionName: projects/$PROJECT_ID/secrets/DB_USER/latest
-      env: 'DB_USER'
-    - versionName: projects/$PROJECT_ID/secrets/DB_PWD/latest
-      env: 'DB_PWD'
-    - versionName: projects/$PROJECT_ID/secrets/CLOUDFLARE_ACCOUNT_ID/latest
-      env: 'CLOUDFLARE_ACCOUNT_ID'
-    - versionName: projects/$PROJECT_ID/secrets/CLOUDFLARE_TOKEN_ID/latest
-      env: 'CLOUDFLARE_TOKEN_ID'
-    - versionName: projects/$PROJECT_ID/secrets/CLOUDFLARE_ACCESS_KEY_ID/latest
-      env: 'CLOUDFLARE_ACCESS_KEY_ID'
-    - versionName: projects/$PROJECT_ID/secrets/CLOUDFLARE_SECRET_ACCESS_KEY/latest
-      env: 'CLOUDFLARE_SECRET_ACCESS_KEY'
-    - versionName: projects/$PROJECT_ID/secrets/CLOUDFLARE_BUCKET_NAME/latest
-      env: 'CLOUDFLARE_BUCKET_NAME'
-    - versionName: projects/$PROJECT_ID/secrets/STRIPE_SECRET_KEY/latest
-      env: 'STRIPE_SECRET_KEY'
-    - versionName: projects/$PROJECT_ID/secrets/STRIPE_WEBHOOK_SECRET/latest
-      env: 'STRIPE_WEBHOOK_SECRET'
-    - versionName: projects/$PROJECT_ID/secrets/FRONTEND_URL/latest
-      env: 'FRONTEND_URL'
