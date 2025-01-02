@@ -73,7 +73,7 @@ steps:
     - '--member=allUsers'
     - '--role=roles/run.invoker'
     
-    images:
+images:
   - 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA'
 
 options:
