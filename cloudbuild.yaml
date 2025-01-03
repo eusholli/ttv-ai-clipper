@@ -133,15 +133,13 @@ steps:
     args:
     - '-c'
     - |
-      SERVICE_ACCOUNT="$$(gcloud run services describe ttv-ai-clipper --platform managed --region us-central1 --format='value(serviceAccount)')"
-      if [ -z "$$SERVICE_ACCOUNT" ]; then
-        echo "Error: Could not retrieve service account. Using default compute service account."
-        SERVICE_ACCOUNT="921656223812-compute@developer.gserviceaccount.com"
-      fi
+      SERVICE_ACCOUNT="921656223812-compute@developer.gserviceaccount.com"
       echo "Using service account: $$SERVICE_ACCOUNT"
-      gcloud projects add-iam-policy-binding $PROJECT_ID \
+      gcloud run services add-iam-policy-binding ttv-ai-clipper \
+        --region=us-central1 \
         --member="serviceAccount:$$SERVICE_ACCOUNT" \
-        --role="roles/cloudsql.client"
+        --role="roles/cloudsql.client" \
+        --platform=managed
     waitFor: ['create-vpc']
     
 images:
