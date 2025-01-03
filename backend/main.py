@@ -46,7 +46,14 @@ class SubscriptionRequest(BaseModel):
     customerId: Optional[str] = None
 
 # Initialize search systems
-transcript_search = TranscriptSearch()
+try:
+    transcript_search = TranscriptSearch()
+except Exception as e:
+    print(f"Failed to initialize TranscriptSearch: {e}")
+    # Continue without search functionality
+    transcript_search = None
+
+# transcript_search = TranscriptSearch()
 
 class SearchRequest(BaseModel):
     query: str
@@ -56,6 +63,14 @@ class SearchRequest(BaseModel):
     selected_title: Optional[List[str]] = None
     selected_company: Optional[List[str]] = None
     selected_subject: Optional[List[str]] = None
+
+@app.get("/api/db-test")
+async def test_db():
+    try:
+        transcript_search.cursor.execute('SELECT 1')
+        return {"status": "connected"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.get("/api/filters")
 async def get_filters():
