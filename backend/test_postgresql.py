@@ -36,7 +36,7 @@ def test_postgresql_connection():
         project_id = db_host.split('.')[0]  # Gets 'ep-cool-poetry-a5t2k9y4'
         
         # Construct connection string with correct project name
-        conn_str = f"postgresql://{db_user}:{db_password}@{db_host}:5432/{db_name}?sslmode=require&options=project%3D{project_id}"
+        conn_str = f"postgresql://{db_user}:{db_password}@{db_host}:5432/{db_name}?sslmode=require&options=project%3D{project_id}&connect_timeout=5"
         
         conn = psycopg2.connect(conn_str)
         logger.info("✓ Successfully connected to PostgreSQL")
