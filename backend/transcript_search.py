@@ -98,14 +98,14 @@ class TranscriptSearch:
         instance_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
         if instance_connection_name:
             # Use Unix domain socket for Cloud SQL
-            socket_dir = '/cloudsql'
-            db_socket_dir = os.path.join(socket_dir, instance_connection_name)
+            db_socket_dir = '/cloudsql'
+            cloud_sql_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
             
             self.conn = psycopg2.connect(
                 dbname=os.getenv('DB_NAME'),
                 user=os.getenv('DB_USER'),
                 password=os.getenv('DB_PWD'),
-                host=db_socket_dir,  # Unix socket directory for Cloud SQL
+                host=f'{db_socket_dir}/{cloud_sql_connection_name}',
                 connect_timeout=30
             )
         else:

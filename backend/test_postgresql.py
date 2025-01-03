@@ -17,17 +17,37 @@ register_adapter(np.ndarray, addapt_numpy_array)
 def test_postgresql_connection():
     """Test PostgreSQL connection and configuration"""
     try:
-        # Connect to PostgreSQL
-        # Enable connection debugging
-        print(f"Attempting to connect to PostgreSQL at {os.getenv('DB_HOST')}...")
-        conn = psycopg2.connect(
-            dbname=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PWD"),
-            host=os.getenv("DB_HOST", "localhost"),
-            port="5432",
-            connect_timeout=10  # Reduced timeout for faster feedback
-        )
+        # Check for required environment variables
+        required_vars = ['DB_NAME', 'DB_USER', 'DB_PWD', 'DB_HOST']
+        missing_vars = [var for var in required_vars if not os.getenv(var)]
+        if missing_vars:
+            raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+        conn = None    
+        # Check if running in Cloud Run (INSTANCE_CONNECTION_NAME will be set)
+        instance_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
+        if instance_connection_name:
+            # Use Unix domain socket for Cloud SQL
+            db_socket_dir = '/cloudsql'
+            cloud_sql_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
+            
+            conn = psycopg2.connect(
+                dbname=os.getenv('DB_NAME'),
+                user=os.getenv('DB_USER'),
+                password=os.getenv('DB_PWD'),
+                host=f'{db_socket_dir}/{cloud_sql_connection_name}',
+                connect_timeout=30
+            )
+        else:
+            # Use regular connection for local development
+            conn = psycopg2.connect(
+                dbname=os.getenv('DB_NAME'),
+                user=os.getenv('DB_USER'),
+                password=os.getenv('DB_PWD'),
+                host=os.getenv('DB_HOST'),
+                sslmode='require',  # Required for Neon database connections
+                connect_timeout=30  # Set connection timeout to 30 seconds
+            )
         print("✓ Successfully connected to PostgreSQL")
 
         # Create a cursor
@@ -76,9 +96,9 @@ def test_postgresql_connection():
         print("✓ Successfully performed similarity search, distance:", distance)
 
         # Cleanup
-        cur.execute("DROP TABLE test_vectors;")
-        conn.commit()
-        print("✓ Cleanup completed")
+        # cur.execute("DROP TABLE test_vectors;")
+        # conn.commit()
+        # print("✓ Cleanup completed")
 
         cur.close()
         conn.close()

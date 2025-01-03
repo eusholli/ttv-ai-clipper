@@ -1,5 +1,7 @@
 #!/bin/bash -x
 
+python backend/test_postgresql.py 
+
 # Start FastAPI
 echo "Starting FastAPI..."
 . /app/venv/bin/activate

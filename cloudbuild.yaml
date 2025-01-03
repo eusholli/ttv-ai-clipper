@@ -76,6 +76,8 @@ steps:
     - 'run'
     - 'deploy'
     - 'ttv-ai-clipper'
+    - '--service-account'
+    - '921656223812-compute@developer.gserviceaccount.com'
     - '--image'
     - 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA'
     - '--region'
