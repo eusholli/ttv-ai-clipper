@@ -38,7 +38,12 @@ def test_postgresql_connection():
             password=db_password,
             host=db_host,
             port="5432",
-            sslmode='require'  # Required for Neon database connections
+            sslmode='require',
+            connect_timeout=5,  # Add timeout
+            keepalives=1,
+            keepalives_idle=5,
+            keepalives_interval=2,
+            keepalives_count=2
         )
         logger.info("✓ Successfully connected to PostgreSQL")
 
