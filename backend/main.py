@@ -42,8 +42,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Initialize R2Manager
-r2_manager = R2Manager()
+try:
+    r2_manager = R2Manager()
+except Exception as e:
+    logger.error(f"Failed to initialize R2Manager: {e}")
+    # Continue without r2_manager functionality
+    r2_manager = None
 
 async def verify_clerk_token(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):

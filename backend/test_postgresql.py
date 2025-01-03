@@ -27,11 +27,16 @@ def test_postgresql_connection():
     """Test PostgreSQL connection and configuration"""
     try:
         # Connect to PostgreSQL
+        db_name=os.getenv("DB_NAME")
+        db_user=os.getenv("DB_USER")
+        db_password=os.getenv("DB_PWD")
+        db_host=os.getenv("DB_HOST", "localhost")
+ 
         conn = psycopg2.connect(
-            dbname=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PWD"),
-            host=os.getenv("DB_HOST", "localhost"),
+            dbname=db_name,
+            user=db_user,
+            password=db_password,
+            host=db_host,
             port="5432",
             sslmode='require'  # Required for Neon database connections
         )

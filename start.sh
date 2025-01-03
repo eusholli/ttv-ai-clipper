@@ -7,7 +7,6 @@ setup_signals() {
 setup_signals
 
 python backend/test_postgresql.py
-exit 1
 
 # Start FastAPI
 echo "Starting FastAPI..."
