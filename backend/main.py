@@ -79,10 +79,7 @@ async def test_db():
 @app.get("/api/filters")
 async def get_filters():
     """Get available filter options for the search interface"""
-    return {
-        'companies' : ['Tom Tit']
-    }
-    # return transcript_search.get_available_filters()
+    return transcript_search.get_available_filters()
 
 @app.post("/api/search")
 async def search(request: SearchRequest):
