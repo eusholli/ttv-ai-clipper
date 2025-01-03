@@ -13,4 +13,3 @@ bs4
 yt_dlp
 pytube
 moviepy
-supabase

@@ -18,15 +18,13 @@ def test_postgresql_connection():
     """Test PostgreSQL connection and configuration"""
     try:
         # Connect to PostgreSQL
-        # Enable connection debugging
-        print(f"Attempting to connect to PostgreSQL at {os.getenv('DB_HOST')}...")
         conn = psycopg2.connect(
             dbname=os.getenv("DB_NAME"),
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PWD"),
             host=os.getenv("DB_HOST", "localhost"),
             port="5432",
-            connect_timeout=10  # Reduced timeout for faster feedback
+            sslmode='require'  # Required for Neon database connections
         )
         print("✓ Successfully connected to PostgreSQL")
 
@@ -92,3 +90,4 @@ def test_postgresql_connection():
 if __name__ == "__main__":
     success = test_postgresql_connection()
     sys.exit(0 if success else 1)
+    
