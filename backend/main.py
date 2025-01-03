@@ -64,6 +64,10 @@ class SearchRequest(BaseModel):
     selected_company: Optional[List[str]] = None
     selected_subject: Optional[List[str]] = None
 
+@app.get("/api/health")
+async def health_check():
+    return {"status": "healthy"}
+
 @app.get("/api/db-test")
 async def test_db():
     try:

@@ -14,13 +14,36 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4 --log-level debu
 # Store the PID
 UVICORN_PID=$!
 
-# Start Nginx
+# Wait for FastAPI to be ready
+echo "Waiting for FastAPI to start..."
+for i in {1..30}; do
+    if curl -s http://localhost:8000/api/health >/dev/null; then
+        echo "FastAPI is ready!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "FastAPI failed to start"
+        exit 1
+    fi
+    sleep 1
+done
+
+# Start Nginx only after FastAPI is confirmed running
 echo "Starting Nginx..."
 nginx -g "daemon off;" &
 NGINX_PID=$!
 
-# Wait for any process to exit
-wait -n
+# Monitor both processes
+while kill -0 $UVICORN_PID && kill -0 $NGINX_PID 2>/dev/null; do
+    sleep 1
+done
 
-# Exit with status of process that exited first
-exit $?
+# If we get here, one of the processes died
+if ! kill -0 $UVICORN_PID 2>/dev/null; then
+    echo "FastAPI died"
+    exit 1
+fi
+if ! kill -0 $NGINX_PID 2>/dev/null; then
+    echo "Nginx died"
+    exit 1
+fi
