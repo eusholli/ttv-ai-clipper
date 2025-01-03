@@ -14,10 +14,15 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4 --log-level debu
 # Store the PID
 UVICORN_PID=$!
 
+# Start Nginx only after FastAPI is confirmed running
+echo "Starting Nginx..."
+nginx -g "daemon off;" &
+NGINX_PID=$!
+
 # Wait for FastAPI to be ready
 echo "Waiting for FastAPI to start..."
 for i in {1..30}; do
-    if curl -s http://localhost:8000/api/health >/dev/null; then
+    if curl -s http://localhost/api/health >/dev/null; then
         echo "FastAPI is ready!"
         break
     fi
@@ -27,11 +32,6 @@ for i in {1..30}; do
     fi
     sleep 1
 done
-
-# Start Nginx only after FastAPI is confirmed running
-echo "Starting Nginx..."
-nginx -g "daemon off;" &
-NGINX_PID=$!
 
 # Monitor both processes
 while kill -0 $UVICORN_PID && kill -0 $NGINX_PID 2>/dev/null; do
