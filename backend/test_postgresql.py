@@ -32,19 +32,13 @@ def test_postgresql_connection():
         db_password=os.getenv("DB_PWD")
         db_host=os.getenv("DB_HOST", "localhost")
  
-        conn = psycopg2.connect(
-            dbname=db_name,
-            user=db_user,
-            password=db_password,
-            host=db_host,
-            port="5432",
-            sslmode='require',
-            connect_timeout=5,  # Add timeout
-            keepalives=1,
-            keepalives_idle=5,
-            keepalives_interval=2,
-            keepalives_count=2
-        )
+        # Extract project ID from the host
+        project_id = db_host.split('.')[0]  # Gets 'ep-cool-poetry-a5t2k9y4'
+        
+        # Construct connection string with correct project name
+        conn_str = f"postgresql://{db_user}:{db_password}@{db_host}:5432/{db_name}?sslmode=require&options=project%3D{project_id}"
+        
+        conn = psycopg2.connect(conn_str)
         logger.info("✓ Successfully connected to PostgreSQL")
 
         # Create a cursor
