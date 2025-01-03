@@ -127,21 +127,6 @@ steps:
     - '600s'
     waitFor: ['create-vpc']
 
-  # Grant Cloud SQL Client role to Cloud Run service account
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: 'bash'
-    args:
-    - '-c'
-    - |
-      SERVICE_ACCOUNT="921656223812-compute@developer.gserviceaccount.com"
-      echo "Using service account: $$SERVICE_ACCOUNT"
-      gcloud run services add-iam-policy-binding ttv-ai-clipper \
-        --region=us-central1 \
-        --member="serviceAccount:$$SERVICE_ACCOUNT" \
-        --role="roles/cloudsql.client" \
-        --platform=managed
-    waitFor: ['create-vpc']
-    
 images:
   - 'gcr.io/$PROJECT_ID/ttv-ai-clipper:$COMMIT_SHA'
 
