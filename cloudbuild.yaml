@@ -136,7 +136,7 @@ steps:
       SERVICE_ACCOUNT="$$(gcloud run services describe ttv-ai-clipper --platform managed --region us-central1 --format='value(serviceAccount)')"
       if [ -z "$$SERVICE_ACCOUNT" ]; then
         echo "Error: Could not retrieve service account. Using default compute service account."
-        SERVICE_ACCOUNT="$PROJECT_ID-compute@developer.gserviceaccount.com"
+        SERVICE_ACCOUNT="921656223812-compute@developer.gserviceaccount.com"
       fi
       echo "Using service account: $$SERVICE_ACCOUNT"
       gcloud projects add-iam-policy-binding $PROJECT_ID \
