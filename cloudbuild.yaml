@@ -96,7 +96,7 @@ steps:
     - '--vpc-egress'
     - 'all-traffic'
     - '--set-env-vars'
-    - 'NODE_ENV=production'
+    - 'NODE_ENV=production,NGINX_ERROR_LOG_LEVEL=debug'
     - '--set-secrets'
     - 'CLOUDFLARE_ACCOUNT_ID=CLOUDFLARE_ACCOUNT_ID:latest'
     - '--set-secrets'
