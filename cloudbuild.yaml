@@ -95,8 +95,10 @@ steps:
     - 'ttv-connector'
     - '--vpc-egress'
     - 'all-traffic'
+    - '--add-cloudsql-instances'
+    - 'ttv-ai-clipper:us-central1:ttv-ai-clipper'
     - '--set-env-vars'
-    - 'NODE_ENV=production,NGINX_ERROR_LOG_LEVEL=debug'
+    - 'NODE_ENV=production,NGINX_ERROR_LOG_LEVEL=debug,INSTANCE_CONNECTION_NAME=ttv-ai-clipper:us-central1:ttv-ai-clipper'
     - '--set-secrets'
     - 'CLOUDFLARE_ACCOUNT_ID=CLOUDFLARE_ACCOUNT_ID:latest'
     - '--set-secrets'
@@ -123,6 +125,18 @@ steps:
     - 'DB_HOST=DB_HOST:latest'
     - '--timeout'
     - '600s'
+    waitFor: ['create-vpc']
+
+  # Grant Cloud SQL Client role to Cloud Run service account
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+    - '-c'
+    - |
+      SERVICE_ACCOUNT="$$(gcloud run services describe ttv-ai-clipper --platform managed --region us-central1 --format='value(serviceAccount)')"
+      gcloud projects add-iam-policy-binding $PROJECT_ID \
+        --member="serviceAccount:$$SERVICE_ACCOUNT" \
+        --role="roles/cloudsql.client"
     waitFor: ['create-vpc']
     
 images:

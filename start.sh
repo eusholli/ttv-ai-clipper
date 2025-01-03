@@ -6,8 +6,6 @@ setup_signals() {
 }
 setup_signals
 
-python backend/test_postgresql.py
-
 # Start FastAPI
 echo "Starting FastAPI..."
 . /app/venv/bin/activate

@@ -67,8 +67,9 @@ COPY backend/logging.conf .
 RUN mkdir -p /var/log/fastapi && \
     chown -R www-data:www-data /var/log/fastapi
 
-# Create a directory for any temporary files
-RUN mkdir -p /tmp/app && chmod 777 /tmp/app
+# Create directories for temporary files and Cloud SQL socket
+RUN mkdir -p /tmp/app && chmod 777 /tmp/app && \
+    mkdir -p /cloudsql && chmod 777 /cloudsql
 
 EXPOSE 80
 

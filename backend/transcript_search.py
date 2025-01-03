@@ -94,14 +94,30 @@ class TranscriptSearch:
         if missing_vars:
             raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
             
-        self.conn = psycopg2.connect(
-            dbname=os.getenv('DB_NAME'),
-            user=os.getenv('DB_USER'),
-            password=os.getenv('DB_PWD'),
-            host=os.getenv('DB_HOST'),
-            sslmode='require',  # Required for Neon database connections
-            connect_timeout=30  # Set connection timeout to 30 seconds
-        )
+        # Check if running in Cloud Run (INSTANCE_CONNECTION_NAME will be set)
+        instance_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
+        if instance_connection_name:
+            # Use Unix domain socket for Cloud SQL
+            socket_dir = '/cloudsql'
+            db_socket_dir = os.path.join(socket_dir, instance_connection_name)
+            
+            self.conn = psycopg2.connect(
+                dbname=os.getenv('DB_NAME'),
+                user=os.getenv('DB_USER'),
+                password=os.getenv('DB_PWD'),
+                host=db_socket_dir,  # Unix socket directory for Cloud SQL
+                connect_timeout=30
+            )
+        else:
+            # Use regular connection for local development
+            self.conn = psycopg2.connect(
+                dbname=os.getenv('DB_NAME'),
+                user=os.getenv('DB_USER'),
+                password=os.getenv('DB_PWD'),
+                host=os.getenv('DB_HOST'),
+                sslmode='require',  # Required for Neon database connections
+                connect_timeout=30  # Set connection timeout to 30 seconds
+            )
         self.cursor = self.conn.cursor()
         
         # Enable required extensions
