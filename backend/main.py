@@ -11,6 +11,15 @@ from backend.r2_manager import R2Manager
 import stripe
 from typing import Optional
 from backend.transcript_search import TranscriptSearch
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s: %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -49,7 +58,7 @@ class SubscriptionRequest(BaseModel):
 try:
     transcript_search = TranscriptSearch()
 except Exception as e:
-    print(f"Failed to initialize TranscriptSearch: {e}")
+    logger.error(f"Failed to initialize TranscriptSearch: {e}")
     # Continue without search functionality
     transcript_search = None
 
@@ -159,13 +168,13 @@ async def create_checkout_session(
             try:
                 customer = stripe.Customer.create()
                 customer_id = customer.id
-                print(f"Created new Stripe customer: {customer_id}")
+                logger.info(f"Created new Stripe customer: {customer_id}")
             except stripe.error.StripeError as e:
-                print(f"Error creating Stripe customer: {str(e)}")
+                logger.error(f"Error creating Stripe customer: {str(e)}")
                 raise HTTPException(status_code=400, detail="Failed to create Stripe customer")
         else:
             customer_id = request.customerId
-            print(f"Using existing Stripe customer: {customer_id}")
+            logger.info(f"Using existing Stripe customer: {customer_id}")
 
         # Get the domain from environment variable
         domain = os.getenv("FRONTEND_URL", "http://localhost:5173")
@@ -184,18 +193,18 @@ async def create_checkout_session(
                 cancel_url=f'{domain}/user-profile?canceled=true',
                 allow_promotion_codes=True,
             )
-            print(f"Created checkout session for customer {customer_id}")
+            logger.info(f"Created checkout session for customer {customer_id}")
             
             return {
                 "url": checkout_session.url,
                 "customerId": customer_id
             }
         except stripe.error.StripeError as e:
-            print(f"Error creating checkout session: {str(e)}")
+            logger.error(f"Error creating checkout session: {str(e)}")
             raise HTTPException(status_code=400, detail="Failed to create checkout session")
             
     except Exception as e:
-        print(f"Unexpected error in create_checkout_session: {str(e)}")
+        logger.error(f"Unexpected error in create_checkout_session: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/create-portal-session")
@@ -208,7 +217,7 @@ async def create_portal_session(
         if not customer_id:
             raise HTTPException(status_code=400, detail="Customer ID is required")
             
-        print(f"Creating portal session for customer: {customer_id}")
+        logger.info(f"Creating portal session for customer: {customer_id}")
         
         # Get the domain from environment variable
         domain = os.getenv("FRONTEND_URL", "http://localhost:5173")
@@ -219,15 +228,15 @@ async def create_portal_session(
                 customer=customer_id,
                 return_url=f'{domain}/user-profile'
             )
-            print(f"Created portal session for customer {customer_id}")
+            logger.info(f"Created portal session for customer {customer_id}")
             
             return {"url": session.url}
         except stripe.error.StripeError as e:
-            print(f"Error creating portal session: {str(e)}")
+            logger.error(f"Error creating portal session: {str(e)}")
             raise HTTPException(status_code=400, detail="Failed to create portal session")
             
     except Exception as e:
-        print(f"Unexpected error in create_portal_session: {str(e)}")
+        logger.error(f"Unexpected error in create_portal_session: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/subscription-status")
@@ -240,7 +249,7 @@ async def get_subscription_status(
         if not customer_id:
             raise HTTPException(status_code=400, detail="Customer ID is required")
             
-        print(f"Checking subscription status for customer: {customer_id}")
+        logger.info(f"Checking subscription status for customer: {customer_id}")
         
         try:
             subscriptions = stripe.Subscription.list(
@@ -250,11 +259,11 @@ async def get_subscription_status(
             )
             
             if not subscriptions.data:
-                print(f"No active subscription found for customer {customer_id}")
+                logger.info(f"No active subscription found for customer {customer_id}")
                 return {"status": "inactive"}
                 
             subscription = subscriptions.data[0]
-            print(f"Found active subscription for customer {customer_id}")
+            logger.info(f"Found active subscription for customer {customer_id}")
             
             return {
                 "status": "active",
@@ -263,11 +272,11 @@ async def get_subscription_status(
                 "cancelAtPeriodEnd": subscription.cancel_at_period_end
             }
         except stripe.error.StripeError as e:
-            print(f"Error checking subscription status: {str(e)}")
+            logger.error(f"Error checking subscription status: {str(e)}")
             raise HTTPException(status_code=400, detail="Failed to check subscription status")
             
     except Exception as e:
-        print(f"Unexpected error in get_subscription_status: {str(e)}")
+        logger.error(f"Unexpected error in get_subscription_status: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/webhook")
@@ -287,10 +296,10 @@ async def stripe_webhook(request: Request):
                 STRIPE_WEBHOOK_SECRET
             )
         except ValueError as e:
-            print("Error parsing webhook payload")
+            logger.error("Error parsing webhook payload")
             raise HTTPException(status_code=400, detail="Invalid payload")
         except stripe.error.SignatureVerificationError as e:
-            print("Error verifying webhook signature")
+            logger.error("Error verifying webhook signature")
             raise HTTPException(status_code=400, detail="Invalid signature")
 
         # Handle the event
@@ -304,20 +313,20 @@ async def stripe_webhook(request: Request):
                 
                 # Handle different subscription events
                 if event['type'] == 'customer.subscription.created':
-                    print(f"New subscription created for customer {customer_id}")
+                    logger.info(f"New subscription created for customer {customer_id}")
                 elif event['type'] == 'customer.subscription.updated':
-                    print(f"Subscription updated for customer {customer_id}")
+                    logger.info(f"Subscription updated for customer {customer_id}")
                 elif event['type'] == 'customer.subscription.deleted':
-                    print(f"Subscription cancelled for customer {customer_id}")
+                    logger.info(f"Subscription cancelled for customer {customer_id}")
 
             except stripe.error.StripeError as e:
-                print(f"Error processing subscription event: {str(e)}")
+                logger.error(f"Error processing subscription event: {str(e)}")
                 return {"status": "error", "message": str(e)}
 
         return {"status": "success"}
         
     except Exception as e:
-        print(f"Error processing webhook: {str(e)}")
+        logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/version")

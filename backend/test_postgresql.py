@@ -4,6 +4,15 @@ from psycopg2.extensions import register_adapter, AsIs
 import sys
 from dotenv import load_dotenv
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(message)s',  # Simple format for Cloud Run logs
+    handlers=[logging.StreamHandler(sys.stdout)]  # Output to stdout for Cloud Run
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -26,7 +35,7 @@ def test_postgresql_connection():
             port="5432",
             sslmode='require'  # Required for Neon database connections
         )
-        print("✓ Successfully connected to PostgreSQL")
+        logger.info("✓ Successfully connected to PostgreSQL")
 
         # Create a cursor
         cur = conn.cursor()
@@ -34,9 +43,9 @@ def test_postgresql_connection():
         # Test 1: Check pgvector extension
         cur.execute("SELECT * FROM pg_extension WHERE extname = 'vector';")
         if cur.fetchone() is not None:
-            print("✓ pgvector extension is installed")
+            logger.info("✓ pgvector extension is installed")
         else:
-            print("✗ pgvector extension is not installed")
+            logger.error("✗ pgvector extension is not installed")
             sys.exit(1)
 
         # Test 2: Create a test table with vector column
@@ -47,7 +56,7 @@ def test_postgresql_connection():
                 embedding vector(3)
             );
         """)
-        print("✓ Successfully created test table")
+        logger.info("✓ Successfully created test table")
 
         # Test 3: Insert and query vector data
         test_vector = np.array([1.0, 2.0, 3.0])
@@ -56,12 +65,12 @@ def test_postgresql_connection():
             (test_vector,)
         )
         inserted_id = cur.fetchone()[0]
-        print("✓ Successfully inserted test vector")
+        logger.info("✓ Successfully inserted test vector")
 
         # Test 4: Query the inserted vector
         cur.execute("SELECT embedding FROM test_vectors WHERE id = %s;", (inserted_id,))
         retrieved_vector = cur.fetchone()[0]
-        print("✓ Successfully retrieved test vector:", retrieved_vector)
+        logger.info(f"✓ Successfully retrieved test vector: {retrieved_vector}")
 
         # Test 5: Test vector similarity search
         cur.execute("""
@@ -71,20 +80,20 @@ def test_postgresql_connection():
             LIMIT 1;
         """, (test_vector,))
         distance = cur.fetchone()[0]
-        print("✓ Successfully performed similarity search, distance:", distance)
+        logger.info(f"✓ Successfully performed similarity search, distance: {distance}")
 
         # Cleanup
         cur.execute("DROP TABLE test_vectors;")
         conn.commit()
-        print("✓ Cleanup completed")
+        logger.info("✓ Cleanup completed")
 
         cur.close()
         conn.close()
-        print("\n✅ All PostgreSQL tests passed successfully!")
+        logger.info("\n✅ All PostgreSQL tests passed successfully!")
         return True
 
     except Exception as e:
-        print(f"\n✗ Error: {str(e)}")
+        logger.error(f"\n✗ Error: {str(e)}")
         return False
 
 if __name__ == "__main__":
