@@ -12,15 +12,17 @@ A full-stack application with a React frontend and Python FastAPI backend, conta
 ├── backend/               # Python FastAPI backend
 │   ├── main.py           # Main backend application
 │   └── requirements.txt   # Python dependencies
-├── build.sh              # Build script for Docker image
+├── bin/                   # Shell scripts
+│   ├── build.sh          # Build script for Docker image
+│   ├── start.sh          # Container startup script
+│   └── stop.sh           # Container shutdown script
 ├── Dockerfile            # Multi-stage Docker build configuration
-├── nginx.conf            # Nginx reverse proxy configuration
-└── start.sh             # Container startup script
+└── nginx.conf            # Nginx reverse proxy configuration
 ```
 
 ## Building the Docker Image
 
-The repository includes a `build.sh` script that automates the Docker image building process. The script:
+The repository includes a `bin/build.sh` script that automates the Docker image building process. The script:
 
 1. Sets version and build metadata
 2. Creates a backup of the Dockerfile
@@ -30,11 +32,8 @@ The repository includes a `build.sh` script that automates the Docker image buil
 To build the Docker image:
 
 ```bash
-# Make the build script executable
-chmod +x build.sh
-
 # Run the build script
-./build.sh
+./bin/build.sh
 ```
 
 This will create two Docker images:

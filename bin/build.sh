@@ -1,4 +1,7 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
 
 VERSION="0.0.6"
 DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

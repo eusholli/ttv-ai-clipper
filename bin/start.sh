@@ -1,4 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
 
 # Function to cleanup child processes
 cleanup() {

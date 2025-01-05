@@ -1,4 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
 
 # Check if gcloud is installed
 if ! command -v gcloud &> /dev/null; then

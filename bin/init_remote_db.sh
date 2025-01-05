@@ -1,4 +1,7 @@
-#!/bin/bash -x
+#!/usr/bin/env bash
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
 
 # Function to initialize database if needed
 init_database() {
@@ -19,7 +22,7 @@ init_database() {
 # Check if DB_HOST is provided
 if [ -z "$DB_HOST" ]; then
     echo "Error: DB_HOST environment variable is not set"
-    echo "Usage: DB_HOST=your_host_here ./init_remote_db.sh"
+    echo "Usage: DB_HOST=your_host_here ./bin/init_remote_db.sh"
     exit 1
 fi
 

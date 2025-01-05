@@ -57,9 +57,8 @@ ENV PYTHONPATH=/app
 # Configure Nginx
 COPY nginx.conf /etc/nginx/nginx.conf
 
-# Copy startup script
-COPY start.sh .
-COPY stop.sh .
+# Copy startup and shutdown scripts
+COPY bin/start.sh bin/stop.sh ./
 RUN chmod +x start.sh stop.sh
 
 # logging config
