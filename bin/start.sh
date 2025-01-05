@@ -27,6 +27,24 @@ cleanup() {
 # Setup signal handling
 trap cleanup SIGTERM SIGINT SIGQUIT
 
+# Start FastAPI
+echo "Starting FastAPI..."
+. /app/venv/bin/activate
+uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4 --log-level info \
+    --log-config /app/logging.conf &
+FASTAPI_PID=$!
+
+# Wait for FastAPI to start
+echo "Waiting for FastAPI to start..."
+while ! curl -s http://localhost:8000/api/health > /dev/null; do
+    if ! kill -0 "$FASTAPI_PID" 2>/dev/null; then
+        echo "FastAPI failed to start"
+        exit 1
+    fi
+    sleep 1
+done
+echo "FastAPI is ready!"
+
 # Start Nginx with logs to stderr
 echo "Starting Nginx..."
 nginx -g "daemon off; error_log stderr;" &
