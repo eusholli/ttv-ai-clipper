@@ -5,6 +5,8 @@ import { useNavigate } from "react-router-dom";
 import axios from 'axios';
 import './Pricing.css';
 
+const BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST;
+
 const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY);
 
 export default function Pricing() {
@@ -62,7 +64,7 @@ export default function Pricing() {
       const token = await getToken();
       const currentStripeCustomerId = user.unsafeMetadata?.stripeCustomerId;
       
-      const response = await axios.post("/api/create-checkout-session", 
+      const response = await axios.post(`${BACKEND_HOST}/api/create-checkout-session`, 
         {
           priceId: priceId,
           customerId: currentStripeCustomerId

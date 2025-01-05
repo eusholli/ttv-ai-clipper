@@ -5,6 +5,8 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import Pricing from "../pricing/Pricing";
 
+const BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST;
+
 // Initialize Stripe
 const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY);
 const SUBSCRIPTION_PRICE_ID = import.meta.env.VITE_STRIPE_MONTHLY_PRICE_ID;
@@ -51,7 +53,7 @@ const UserProfilePage = () => {
       const token = await getToken();
       if (stripeCustomerId) {
         console.log("Making API call to check subscription status");
-        const response = await axios.get(`/api/subscription-status?customer_id=${stripeCustomerId}`, {
+        const response = await axios.get(`${BACKEND_HOST}/api/subscription-status?customer_id=${stripeCustomerId}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         console.log("Subscription status response:", response.data);
@@ -107,7 +109,7 @@ const UserProfilePage = () => {
       const token = await getToken();
       const currentStripeCustomerId = user.unsafeMetadata?.stripeCustomerId;
       
-      const response = await axios.post("/api/create-checkout-session", 
+      const response = await axios.post(`${BACKEND_HOST}/api/create-checkout-session`, 
         {
           priceId: SUBSCRIPTION_PRICE_ID,
           customerId: currentStripeCustomerId
@@ -146,7 +148,7 @@ const UserProfilePage = () => {
       
       // Changed to use query parameter instead of request body
       const response = await axios.post(
-        `/api/create-portal-session?customer_id=${stripeCustomerId}`,
+        `${BACKEND_HOST}/api/create-portal-session?customer_id=${stripeCustomerId}`,
         {},  // Empty body since we're using query parameter
         { headers: { Authorization: `Bearer ${token}` } }
       );

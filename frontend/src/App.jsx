@@ -4,6 +4,8 @@ import { ClerkProvider, SignedIn, useAuth, useUser } from '@clerk/clerk-react'
 import './styles.css'
 import axios from 'axios'
 
+const BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST
+
 // Auth Components
 import SignInPage from './components/auth/SignIn'
 import SignUpPage from './components/auth/SignUp'
@@ -56,7 +58,7 @@ const DownloadButton = ({ result, downloading, setDownloading }) => {
         return;
       }
 
-      const response = await axios.get(`/api/subscription-status?customer_id=${stripeCustomerId}`, {
+      const response = await axios.get(`${BACKEND_HOST}/api/subscription-status?customer_id=${stripeCustomerId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -67,7 +69,7 @@ const DownloadButton = ({ result, downloading, setDownloading }) => {
 
       setDownloading({ ...downloading, [result.segment_hash]: true });
       
-      const downloadResponse = await fetch(`/api/download/${result.segment_hash}`);
+      const downloadResponse = await fetch(`${BACKEND_HOST}/api/download/${result.segment_hash}`);
       if (!downloadResponse.ok) {
         const errorText = await downloadResponse.text();
         throw new Error(`Status: ${downloadResponse.status}\nMessage: ${errorText}`);
@@ -169,7 +171,7 @@ const MainContent = () => {
   useEffect(() => {
     const fetchFilters = async () => {
       try {
-        const response = await fetch('/api/filters');
+        const response = await fetch(`${BACKEND_HOST}/api/filters`);
         if (!response.ok) {
           const errorText = await response.text();
           throw new Error(`Status: ${response.status}\nMessage: ${errorText}`);
@@ -212,7 +214,7 @@ const MainContent = () => {
         setNumResults(validatedResults);
       }
 
-      const response = await fetch('/api/search', {
+      const response = await fetch(`${BACKEND_HOST}/api/search`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
