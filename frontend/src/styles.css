@@ -428,11 +428,26 @@ body {
   font-family: Arial, sans-serif;
 }
 
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  font-family: Arial, sans-serif;
+  color: #003366;
+}
+
+.loading-text {
+  margin-top: 1rem;
+  font-size: 1.2rem;
+}
+
 .spinner {
-  width: 20px;
-  height: 20px;
-  border: 2px solid #f3f3f3;
-  border-top: 2px solid #003366;
+  width: 40px;
+  height: 40px;
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #003366;
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }

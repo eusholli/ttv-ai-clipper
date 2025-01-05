@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -x
 
 # Kill uvicorn/FastAPI process
 pkill -f "uvicorn main:app"

@@ -3,19 +3,23 @@ import os
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from sentence_transformers import SentenceTransformer
-import faiss
-import pickle
-import numpy as np
-from typing import Dict, List, Optional
+from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
-import re
 from dotenv import load_dotenv
-from r2_manager import R2Manager
+from backend.r2_manager import R2Manager
 import stripe
 from typing import Optional
-import json
+from backend.transcript_search import TranscriptSearch
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s: %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -38,8 +42,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Initialize R2Manager
-r2_manager = R2Manager()
+try:
+    r2_manager = R2Manager()
+except Exception as e:
+    logger.error(f"Failed to initialize R2Manager: {e}")
+    # Continue without r2_manager functionality
+    r2_manager = None
 
 async def verify_clerk_token(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -50,110 +60,15 @@ class SubscriptionRequest(BaseModel):
     priceId: str
     customerId: Optional[str] = None
 
-class TranscriptSearchSystem:
-    def __init__(self, index_path='transcript_search.index', metadata_path='transcript_metadata.pkl'):
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
-        self.index_path = index_path
-        self.metadata_path = metadata_path
-        self.dimension = 384
-        self.load_or_create_index()
+# Initialize search systems
+try:
+    transcript_search = TranscriptSearch()
+except Exception as e:
+    logger.error(f"Failed to initialize TranscriptSearch: {e}")
+    # Continue without search functionality
+    transcript_search = None
 
-    def load_or_create_index(self):
-        if os.path.exists(self.index_path) and os.path.exists(self.metadata_path):
-            try:
-                self.index = faiss.read_index(self.index_path)
-                with open(self.metadata_path, 'rb') as f:
-                    self.metadata, self.processed_hashes = pickle.load(f)
-            except Exception as e:
-                print(f"Error loading index: {str(e)}")
-                self.create_new_index()
-        else:
-            self.create_new_index()
-
-    def create_new_index(self):
-        self.index = faiss.IndexFlatL2(self.dimension)
-        self.metadata = []
-        self.processed_hashes = set()
-
-    def search(self, query: str, top_k: int = 5, selected_speaker: List[str] = None, 
-              selected_date: List[str] = None, selected_title: List[str] = None,
-              selected_company: List[str] = None) -> List[Dict]:
-        if not self.metadata:
-            return []
-        
-        # Get initial embeddings for all entries that match the filters
-        filtered_indices = []
-        filtered_metadata = []
-        
-        for idx, meta in enumerate(self.metadata):
-            # Apply filters
-            if selected_speaker and meta['speaker'] not in selected_speaker:
-                continue
-            if selected_date and meta['date'] not in selected_date:
-                continue
-            if selected_title and meta['title'] not in selected_title:
-                continue
-            if selected_company and meta['company'] not in selected_company:
-                continue
-            
-            filtered_indices.append(idx)
-            filtered_metadata.append(meta)
-        
-        if not filtered_indices:
-            return []
-        
-        # Create a temporary index with only the filtered entries
-        temp_index = faiss.IndexFlatL2(self.dimension)
-        temp_vectors = [self.index.reconstruct(i) for i in filtered_indices]
-        temp_index.add(np.array(temp_vectors).astype('float32'))
-        
-        # Perform search on filtered index
-        query_vector = self.model.encode([query])[0]
-        distances, indices = temp_index.search(
-            np.array([query_vector]).astype('float32'), 
-            min(top_k, len(filtered_metadata))
-        )
-        
-        results = []
-        for i, idx in enumerate(indices[0]):
-            if idx >= 0:
-                result = filtered_metadata[idx].copy()
-                result['score'] = float(1 / (1 + distances[0][i]))  # Convert numpy float to Python float
-                results.append(result)
-                
-        return sorted(results, key=lambda x: x['score'], reverse=True)
-
-    def get_metadata_by_hash(self, segment_hash: str) -> Optional[Dict]:
-        for meta in self.metadata:
-            if meta['segment_hash'] == segment_hash:
-                return meta
-        return None
-
-    def get_available_filters(self) -> Dict[str, List[str]]:
-        if not self.metadata:
-            return {
-                "speakers": [],
-                "dates": [],
-                "titles": [],
-                "companies": []
-            }
-
-        # Get unique values for each filter
-        speakers = sorted(list(set(m['speaker'] for m in self.metadata)))
-        dates = list(set(m['date'] for m in self.metadata))
-        dates.sort(key=lambda x: datetime.strptime(x, "%b %d, %Y"), reverse=True)
-        titles = sorted(list(set(m['title'] for m in self.metadata)))
-        companies = sorted(list(set(m['company'] for m in self.metadata)))
-
-        return {
-            "speakers": speakers,
-            "dates": dates,
-            "titles": titles,
-            "companies": companies
-        }
-
-# Initialize search system at startup
-search_system = TranscriptSearchSystem()
+# transcript_search = TranscriptSearch()
 
 class SearchRequest(BaseModel):
     query: str
@@ -162,23 +77,55 @@ class SearchRequest(BaseModel):
     selected_date: Optional[List[str]] = None
     selected_title: Optional[List[str]] = None
     selected_company: Optional[List[str]] = None
+    selected_subject: Optional[List[str]] = None
+
+@app.get("/api/health")
+async def health_check():
+    return {"status": "healthy"}
+
+@app.get("/api/db-test")
+async def test_db():
+    try:
+        transcript_search.cursor.execute('SELECT 1')
+        return {"status": "connected"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.get("/api/filters")
 async def get_filters():
     """Get available filter options for the search interface"""
-    return search_system.get_available_filters()
+    return transcript_search.get_available_filters()
 
 @app.post("/api/search")
 async def search(request: SearchRequest):
     """Perform a search with the given parameters"""
-    results = search_system.search(
-        query=request.query,
-        top_k=request.top_k,
-        selected_speaker=request.selected_speaker,
-        selected_date=request.selected_date,
-        selected_title=request.selected_title,
-        selected_company=request.selected_company
+    # Map request parameters to hybrid_search filters
+    filters = {}
+    if request.selected_speaker:
+        filters['speakers'] = request.selected_speaker
+    if request.selected_company:
+        filters['companies'] = request.selected_company
+    if request.selected_title:
+        filters['title'] = request.selected_title[0] if request.selected_title else None
+    if request.selected_date:
+        # Convert date strings to datetime objects for date range
+        dates = [datetime.strptime(d, "%b %d, %Y") for d in request.selected_date]
+        if dates:
+            filters['date_range'] = (min(dates), max(dates))
+    if request.selected_subject:
+        filters['subjects'] = request.selected_subject
+
+    results = transcript_search.hybrid_search(
+        search_text=request.query,
+        filters=filters,
+        semantic_weight=0.7,  # Default to balanced semantic/text search
+        limit=request.top_k
     )
+
+    # Map similarity score to score for backwards compatibility
+    for result in results:
+        result['score'] = result.pop('similarity')
+
     return {
         "results": results,
         "total_results": len(results)
@@ -187,7 +134,7 @@ async def search(request: SearchRequest):
 @app.get("/api/clip/{segment_hash}")
 async def get_clip(segment_hash: str):
     """Get metadata for a specific clip by its hash"""
-    clip = search_system.get_metadata_by_hash(segment_hash)
+    clip = transcript_search.get_metadata_by_hash(segment_hash)
     if clip:
         return clip
     return {"error": "Clip not found"}
@@ -195,7 +142,7 @@ async def get_clip(segment_hash: str):
 @app.get("/api/download/{segment_hash}")
 async def download_clip(segment_hash: str):
     """Download a clip by its hash using R2 storage"""
-    clip = search_system.get_metadata_by_hash(segment_hash)
+    clip = transcript_search.get_metadata_by_hash(segment_hash)
     if not clip or 'download' not in clip:
         raise HTTPException(status_code=404, detail="Clip not found")
     
@@ -227,13 +174,13 @@ async def create_checkout_session(
             try:
                 customer = stripe.Customer.create()
                 customer_id = customer.id
-                print(f"Created new Stripe customer: {customer_id}")
+                logger.info(f"Created new Stripe customer: {customer_id}")
             except stripe.error.StripeError as e:
-                print(f"Error creating Stripe customer: {str(e)}")
+                logger.error(f"Error creating Stripe customer: {str(e)}")
                 raise HTTPException(status_code=400, detail="Failed to create Stripe customer")
         else:
             customer_id = request.customerId
-            print(f"Using existing Stripe customer: {customer_id}")
+            logger.info(f"Using existing Stripe customer: {customer_id}")
 
         # Get the domain from environment variable
         domain = os.getenv("FRONTEND_URL", "http://localhost:5173")
@@ -252,18 +199,18 @@ async def create_checkout_session(
                 cancel_url=f'{domain}/user-profile?canceled=true',
                 allow_promotion_codes=True,
             )
-            print(f"Created checkout session for customer {customer_id}")
+            logger.info(f"Created checkout session for customer {customer_id}")
             
             return {
                 "url": checkout_session.url,
                 "customerId": customer_id
             }
         except stripe.error.StripeError as e:
-            print(f"Error creating checkout session: {str(e)}")
+            logger.error(f"Error creating checkout session: {str(e)}")
             raise HTTPException(status_code=400, detail="Failed to create checkout session")
             
     except Exception as e:
-        print(f"Unexpected error in create_checkout_session: {str(e)}")
+        logger.error(f"Unexpected error in create_checkout_session: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/create-portal-session")
@@ -276,7 +223,7 @@ async def create_portal_session(
         if not customer_id:
             raise HTTPException(status_code=400, detail="Customer ID is required")
             
-        print(f"Creating portal session for customer: {customer_id}")
+        logger.info(f"Creating portal session for customer: {customer_id}")
         
         # Get the domain from environment variable
         domain = os.getenv("FRONTEND_URL", "http://localhost:5173")
@@ -287,15 +234,15 @@ async def create_portal_session(
                 customer=customer_id,
                 return_url=f'{domain}/user-profile'
             )
-            print(f"Created portal session for customer {customer_id}")
+            logger.info(f"Created portal session for customer {customer_id}")
             
             return {"url": session.url}
         except stripe.error.StripeError as e:
-            print(f"Error creating portal session: {str(e)}")
+            logger.error(f"Error creating portal session: {str(e)}")
             raise HTTPException(status_code=400, detail="Failed to create portal session")
             
     except Exception as e:
-        print(f"Unexpected error in create_portal_session: {str(e)}")
+        logger.error(f"Unexpected error in create_portal_session: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/subscription-status")
@@ -308,7 +255,7 @@ async def get_subscription_status(
         if not customer_id:
             raise HTTPException(status_code=400, detail="Customer ID is required")
             
-        print(f"Checking subscription status for customer: {customer_id}")
+        logger.info(f"Checking subscription status for customer: {customer_id}")
         
         try:
             subscriptions = stripe.Subscription.list(
@@ -318,11 +265,11 @@ async def get_subscription_status(
             )
             
             if not subscriptions.data:
-                print(f"No active subscription found for customer {customer_id}")
+                logger.info(f"No active subscription found for customer {customer_id}")
                 return {"status": "inactive"}
                 
             subscription = subscriptions.data[0]
-            print(f"Found active subscription for customer {customer_id}")
+            logger.info(f"Found active subscription for customer {customer_id}")
             
             return {
                 "status": "active",
@@ -331,11 +278,11 @@ async def get_subscription_status(
                 "cancelAtPeriodEnd": subscription.cancel_at_period_end
             }
         except stripe.error.StripeError as e:
-            print(f"Error checking subscription status: {str(e)}")
+            logger.error(f"Error checking subscription status: {str(e)}")
             raise HTTPException(status_code=400, detail="Failed to check subscription status")
             
     except Exception as e:
-        print(f"Unexpected error in get_subscription_status: {str(e)}")
+        logger.error(f"Unexpected error in get_subscription_status: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/webhook")
@@ -355,10 +302,10 @@ async def stripe_webhook(request: Request):
                 STRIPE_WEBHOOK_SECRET
             )
         except ValueError as e:
-            print("Error parsing webhook payload")
+            logger.error("Error parsing webhook payload")
             raise HTTPException(status_code=400, detail="Invalid payload")
         except stripe.error.SignatureVerificationError as e:
-            print("Error verifying webhook signature")
+            logger.error("Error verifying webhook signature")
             raise HTTPException(status_code=400, detail="Invalid signature")
 
         # Handle the event
@@ -372,20 +319,20 @@ async def stripe_webhook(request: Request):
                 
                 # Handle different subscription events
                 if event['type'] == 'customer.subscription.created':
-                    print(f"New subscription created for customer {customer_id}")
+                    logger.info(f"New subscription created for customer {customer_id}")
                 elif event['type'] == 'customer.subscription.updated':
-                    print(f"Subscription updated for customer {customer_id}")
+                    logger.info(f"Subscription updated for customer {customer_id}")
                 elif event['type'] == 'customer.subscription.deleted':
-                    print(f"Subscription cancelled for customer {customer_id}")
+                    logger.info(f"Subscription cancelled for customer {customer_id}")
 
             except stripe.error.StripeError as e:
-                print(f"Error processing subscription event: {str(e)}")
+                logger.error(f"Error processing subscription event: {str(e)}")
                 return {"status": "error", "message": str(e)}
 
         return {"status": "success"}
         
     except Exception as e:
-        print(f"Error processing webhook: {str(e)}")
+        logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/version")

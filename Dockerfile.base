@@ -1,0 +1,28 @@
+# base.Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+
+# Set noninteractive frontend and configure apt
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+RUN echo 'APT::Install-Suggests "0";' >> /etc/apt/apt.conf.d/00-docker \
+    && echo 'APT::Install-Recommends "0";' >> /etc/apt/apt.conf.d/00-docker
+
+# Install dependencies
+RUN apt-get update && apt-get install -y apt-utils && \
+    apt-get install -y \
+        nginx \
+        python3-venv \
+        procps \
+        build-essential \
+        gcc \
+        g++ \
+        curl \
+        && rm -rf /var/lib/apt/lists/*
+
+ENV VIRTUAL_ENV=/app/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+COPY backend/requirements-slow.txt .
+RUN pip install --no-cache-dir -r requirements-slow.txt && \
+    python -m spacy download en_core_web_sm

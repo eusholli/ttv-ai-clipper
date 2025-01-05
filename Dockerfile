@@ -11,8 +11,8 @@ RUN npm run build
 FROM python:3.11-slim
 
 # Build-time arguments for versioning
-ARG BUILD_VERSION="0.0.4"
-ARG BUILD_DATE="2024-12-17T21:34:40Z"
+ARG BUILD_VERSION="0.0.6"
+ARG BUILD_DATE="2025-01-02T17:41:47Z"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
@@ -21,54 +21,57 @@ LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.description="Frontend + Backend Application" \
       org.opencontainers.image.vendor="Hollingworth LLC"
 
-# Set version as environment variable (accessible at runtime)
+# Set version as environment variable
 ENV APP_VERSION=${BUILD_VERSION}
+
+# Final stage
+FROM eusholli/ttv-ai-clipper-base:latest
 
 WORKDIR /app
 
-# Set noninteractive frontend before apt-get
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install Nginx, python3-venv, and debugging tools
-RUN apt-get update && \
-    apt-get install -y \
-    nginx \
-    python3-venv \
-    procps \
-    curl \
-    vim \
-    openssh-server \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create and activate virtual environment
+# Setup Python environment
 ENV VIRTUAL_ENV=/app/venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
+# Install remaining requirements
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+# RUN playwright install
+# RUN playwright install-deps
+
+    # Create required directories with proper permissions
+RUN mkdir -p /var/log/nginx /var/log/fastapi /var/log/postgresql && \
+    touch /var/log/fastapi/access.log /var/log/fastapi/error.log && \
+    chown -R www-data:www-data /var/log/nginx /var/log/fastapi /var/log/postgresql
+
 # Copy frontend build
 COPY --from=frontend-build /frontend/dist /app/static
 
-# Setup backend
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY backend/ .
-COPY r2_manager.py .
-COPY transcript_metadata.pkl .
-COPY transcript_search.index .
+# Create backend package directory and copy files
+RUN mkdir -p /app/backend
+COPY backend/ /app/backend/
+COPY urls.zip /app/
+ENV PYTHONPATH=/app
 
 # Configure Nginx
 COPY nginx.conf /etc/nginx/nginx.conf
 
-# Script to start and stop services
+# Copy startup script
 COPY start.sh .
 COPY stop.sh .
 RUN chmod +x start.sh stop.sh
 
-# Create log directories and set permissions
+# logging config
+COPY backend/logging.conf .
 RUN mkdir -p /var/log/fastapi && \
-    touch /var/log/fastapi/access.log && \
-    touch /var/log/fastapi/error.log
+    chown -R www-data:www-data /var/log/fastapi
+
+# Create directories for temporary files and Cloud SQL socket
+RUN mkdir -p /tmp/app && chmod 777 /tmp/app && \
+    mkdir -p /cloudsql && chmod 777 /cloudsql
 
 EXPOSE 80
 
+# Use modified entrypoint script
 CMD ["./start.sh"]

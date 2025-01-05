@@ -116,13 +116,15 @@ const MainContent = () => {
     speakers: [],
     dates: [],
     titles: [],
-    companies: []
+    companies: [],
+    subjects: {}
   })
   const [selectedFilters, setSelectedFilters] = useState({
     selected_speaker: [],
     selected_date: [],
     selected_title: [],
-    selected_company: []
+    selected_company: [],
+    selected_subject: []
   })
   const [numResults, setNumResults] = useState(5)
   const [openDropdown, setOpenDropdown] = useState(null)
@@ -163,21 +165,27 @@ const MainContent = () => {
     }
   }, [])
 
-  // Fetch available filters on component mount
+  // Fetch available filters on component mount with retry logic
   useEffect(() => {
-    fetch('/api/filters')
-      .then(async response => {
+    const fetchFilters = async () => {
+      try {
+        const response = await fetch('/api/filters');
         if (!response.ok) {
           const errorText = await response.text();
           throw new Error(`Status: ${response.status}\nMessage: ${errorText}`);
         }
-        return response.json();
-      })
-      .then(data => setFilters(data))
-      .catch(err => {
+        const data = await response.json();
+        setFilters(data);
+        setIsLoading(false);
+      } catch (err) {
         console.error('Error fetching filters:', err);
-        alert(`Failed to fetch filters:\n${err.message}`);
-      });
+        // Retry after 1 second
+        setTimeout(fetchFilters, 1000);
+      }
+    };
+
+    setIsLoading(true);
+    fetchFilters();
   }, [])
 
   // Effect to trigger search when filters change or when restored from localStorage
@@ -185,7 +193,7 @@ const MainContent = () => {
     if (searchQuery || Object.values(selectedFilters).some(arr => arr.length > 0)) {
       handleSearch();
     }
-  }, [selectedFilters, searchQuery]);
+  }, [selectedFilters]);
 
   // Validate and adjust number of results
   const validateNumResults = (value) => {
@@ -231,43 +239,40 @@ const MainContent = () => {
     }
   }
 
-  // Convert timestamp to seconds
-  const timestampToSeconds = (timestamp) => {
-    const parts = timestamp.split(':')
-    if (parts.length === 3) {
-      const [h, m, s] = parts.map(Number)
-      return h * 3600 + m * 60 + s
-    } else if (parts.length === 2) {
-      const [m, s] = parts.map(Number)
-      return m * 60 + s
-    } else {
-      console.error(`Invalid timestamp format: ${timestamp}`)
-      return 0
+  // Format seconds to HH:MM:SS
+  const formatSecondsToTime = (seconds) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+    
+    if (hours > 0) {
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
     }
-  }
-
-  // Format timestamp for display
-  const formatTimestamp = (timestamp) => {
-    const parts = timestamp.split(':')
-    if (parts.length === 2) {
-      return `${parts[0]}m ${parts[1]}s`
-    }
-    return timestamp
+    return `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
   }
 
   // Handle filter selection
   const handleFilterChange = (filterType, value) => {
     setSelectedFilters(prev => {
-      const currentValues = prev[filterType]
-      const valueIndex = currentValues.indexOf(value)
-      
-      const newFilters = valueIndex === -1
-        ? { ...prev, [filterType]: [...currentValues, value] }
-        : { ...prev, [filterType]: currentValues.filter((_, index) => index !== valueIndex) };
-      
+      const currentValues = prev[filterType];
+      let newValues;
+
+      if (filterType === 'selected_subject') {
+        // For subjects, we store the display string in the UI but use the value for filtering
+        const subjectValue = filters.subjects[value];
+        const valueIndex = currentValues.indexOf(subjectValue);
+        newValues = valueIndex === -1
+          ? [...currentValues, subjectValue]
+          : currentValues.filter((_, index) => index !== valueIndex);
+      } else {
+        const valueIndex = currentValues.indexOf(value);
+        newValues = valueIndex === -1
+          ? [...currentValues, value]
+          : currentValues.filter((_, index) => index !== valueIndex);
+      }
+
       setOpenDropdown(null);
-      
-      return newFilters;
+      return { ...prev, [filterType]: newValues };
     });
   }
 
@@ -290,17 +295,31 @@ const MainContent = () => {
 
   // Remove selected filter
   const removeFilter = (filterType, value) => {
-    setSelectedFilters(prev => ({
-      ...prev,
-      [filterType]: prev[filterType].filter(item => item !== value)
-    }));
+    setSelectedFilters(prev => {
+      if (filterType === 'selected_subject') {
+        // For subjects, we need to find the display string that matches this value
+        const displayString = Object.entries(filters.subjects)
+          .find(([_, v]) => v === value)?.[0];
+        if (!displayString) return prev;
+      }
+      return {
+        ...prev,
+        [filterType]: prev[filterType].filter(item => item !== value)
+      };
+    });
   }
 
   const filterMappings = {
     selected_speaker: { label: 'Speakers', values: filters.speakers },
     selected_date: { label: 'Dates', values: filters.dates },
     selected_title: { label: 'Titles', values: filters.titles },
-    selected_company: { label: 'Companies', values: filters.companies }
+    selected_company: { label: 'Companies', values: filters.companies },
+    selected_subject: { 
+      label: 'Subjects', 
+      values: Object.keys(filters.subjects || {}),
+      getDisplayValue: (key) => key,
+      getValue: (key) => filters.subjects[key]
+    }
   }
 
   // Handle key press for search input
@@ -310,126 +329,150 @@ const MainContent = () => {
     }
   }
 
+  // Get display string for a subject value
+  const getSubjectDisplayString = (value) => {
+    const entry = Object.entries(filters.subjects).find(([_, v]) => v === value);
+    return entry ? entry[0] : value;
+  }
+
   return (
     <div className="container">
       <h1 className="main-title">Telecom TV AI Clipper</h1>
       
-      {/* Search Section */}
-      <section className="search-section">
-        <div className="search-container">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Search transcripts..."
-            className="search-input"
-          />
-          <button onClick={handleSearch} className="search-button" disabled={isLoading}>
-            {isLoading ? <div className="spinner" /> : 'Search'}
-          </button>
+      {isLoading ? (
+        <div className="loading-container">
+          <div className="spinner" />
+          <div className="loading-text">AI is Loading</div>
         </div>
+      ) : (
+        <>
+          {/* Search Section */}
+          <section className="search-section">
+            <div className="search-container">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Search transcripts..."
+                className="search-input"
+              />
+              <button onClick={handleSearch} className="search-button" disabled={isLoading}>
+                Search
+              </button>
+            </div>
 
-        <div className="filters-container" ref={filtersRef}>
-          {Object.entries(filterMappings).map(([filterType, { label, values }]) => (
-            <div key={filterType} className="filter-group">
-              <label className="filter-label">{label}</label>
-              <div className="filter-dropdown">
-                <button 
-                  className="dropdown-button"
-                  onClick={() => toggleDropdown(filterType)}
-                >
-                  Select {label}
-                </button>
-                {openDropdown === filterType && (
-                  <div className="dropdown-content">
-                    {values.map(value => (
-                      <div 
-                        key={value}
-                        className={`dropdown-item ${selectedFilters[filterType].includes(value) ? 'selected' : ''}`}
-                        onClick={() => handleFilterChange(filterType, value)}
-                      >
-                        {value}
+            <div className="filters-container" ref={filtersRef}>
+              {Object.entries(filterMappings).map(([filterType, { label, values, getDisplayValue }]) => (
+                <div key={filterType} className="filter-group">
+                  <label className="filter-label">{label}</label>
+                  <div className="filter-dropdown">
+                    <button 
+                      className="dropdown-button"
+                      onClick={() => toggleDropdown(filterType)}
+                    >
+                      Select {label}
+                    </button>
+                    {openDropdown === filterType && (
+                      <div className="dropdown-content">
+                        {values.map(value => {
+                          const displayValue = getDisplayValue ? getDisplayValue(value) : value;
+                          const selectedValue = filterType === 'selected_subject' 
+                            ? filters.subjects[value]
+                            : value;
+                          return (
+                            <div 
+                              key={value}
+                              className={`dropdown-item ${selectedFilters[filterType].includes(selectedValue) ? 'selected' : ''}`}
+                              onClick={() => handleFilterChange(filterType, value)}
+                            >
+                              {displayValue}
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
+                    )}
                   </div>
-                )}
-              </div>
-              <div className="selected-filters">
-                {selectedFilters[filterType].map(value => (
-                  <span 
-                    key={value} 
-                    className="filter-tag"
-                    onClick={() => removeFilter(filterType, value)}
-                  >
-                    {value} ×
-                  </span>
-                ))}
+                  <div className="selected-filters">
+                    {selectedFilters[filterType].map(value => {
+                      const displayValue = filterType === 'selected_subject'
+                        ? getSubjectDisplayString(value)
+                        : value;
+                      return (
+                        <span 
+                          key={value} 
+                          className="filter-tag"
+                          onClick={() => removeFilter(filterType, value)}
+                        >
+                          {displayValue} ×
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              <div className="filter-group">
+                <label className="filter-label">Results</label>
+                <input
+                  type="number"
+                  value={numResults}
+                  onChange={handleNumResultsChange}
+                  onKeyDown={handleResultsKeyDown}
+                  className="results-input"
+                />
               </div>
             </div>
-          ))}
+          </section>
 
-          <div className="filter-group">
-            <label className="filter-label">Results</label>
-            <input
-              type="number"
-              value={numResults}
-              onChange={handleNumResultsChange}
-              onKeyDown={handleResultsKeyDown}
-              className="results-input"
-            />
-          </div>
-        </div>
-      </section>
+          {/* Search Results */}
+          {searchResults.length > 0 && (
+            <div className="search-results">
+              {searchResults.map((result, index) => {
+                const startParam = result.start_time === 0 ? "0" : result.start_time - 1;
+                const endParam = result.end_time === 0 ? "" : `&end=${result.end_time + 1}`;
+                const ytUrl = `https://youtube.com/embed/${result.youtube_id}?start=${startParam}${endParam}&autoplay=0&rel=0`;
 
-      {/* Search Results */}
-      {searchResults.length > 0 && (
-        <div className="search-results">
-          {searchResults.map((result, index) => {
-            const stTs = timestampToSeconds(result.start_time)
-            const endTs = timestampToSeconds(result.end_time)
-            const startParam = stTs === 0 ? "0" : stTs - 1
-            const endParam = endTs === 0 ? "" : `&end=${endTs + 1}`
-            const ytUrl = `https://youtube.com/embed/${result.youtube_id}?start=${startParam}${endParam}&autoplay=0&rel=0`
-
-            return (
-              <article key={index} className="result-item">
-                <div className="result-content">
-                  <h2 className="result-title">{result.title}</h2>
-                  <div className="result-meta">
-                    {result.speaker} · {result.company}
-                  </div>
-                  <div className="result-time">
-                    {formatTimestamp(result.start_time)} - {formatTimestamp(result.end_time)} · {result.date}
-                    <span className="result-score">Match Score: {(result.score * 100).toFixed(1)}%</span>
-                  </div>
-                  <p className="result-text">{result.text}</p>
-                  {result.subjects && (
-                    <div className="result-tags">
-                      Tags: {result.subjects.join(', ')}
+                return (
+                  <article key={index} className="result-item">
+                    <div className="result-content">
+                      <h2 className="result-title">{result.title}</h2>
+                      <div className="result-meta">
+                        {result.speaker} · {result.company}
+                      </div>
+                      <div className="result-time">
+                        {formatSecondsToTime(result.start_time)} - {formatSecondsToTime(result.end_time)} · {result.date.split('T')[0]}
+                        <span className="result-score">Match Score: {(result.score * 100).toFixed(1)}%</span>
+                      </div>
+                      <p className="result-text">{result.text}</p>
+                      {result.subjects && (
+                        <div className="result-tags">
+                          Tags: {result.subjects.map(subject => getSubjectDisplayString(subject)).join(', ')}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-                <div className="result-video">
-                  <iframe
-                    src={ytUrl}
-                    width="300"
-                    height="169"
-                    frameBorder="0"
-                    allowFullScreen
-                  />
-                  {result.download && (
-                    <DownloadButton 
-                      result={result}
-                      downloading={downloading}
-                      setDownloading={setDownloading}
-                    />
-                  )}
-                </div>
-              </article>
-            )
-          })}
-        </div>
+                    <div className="result-video">
+                      <iframe
+                        src={ytUrl}
+                        width="300"
+                        height="169"
+                        frameBorder="0"
+                        allowFullScreen
+                      />
+                      {result.download && (
+                        <DownloadButton 
+                          result={result}
+                          downloading={downloading}
+                          setDownloading={setDownloading}
+                        />
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
     </div>
   )
