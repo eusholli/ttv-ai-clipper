@@ -74,8 +74,16 @@ const UserProfilePage = () => {
     if (user) {
       console.log("User loaded, current metadata:", user.unsafeMetadata);
       checkSubscription();
+      
+      // Only redirect if we came from authentication
+      const fromAuth = sessionStorage.getItem('fromAuth');
+      if (fromAuth === 'true') {
+        sessionStorage.removeItem('fromAuth');
+        navigate('/', { replace: true });
+        return;
+      }
     }
-  }, [user]);
+  }, [user, navigate]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);

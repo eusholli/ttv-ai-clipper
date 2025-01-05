@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { BrowserRouter as Router, Routes, Route, useNavigate, Navigate } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom'
 import { ClerkProvider, SignedIn, useAuth, useUser } from '@clerk/clerk-react'
 import './styles.css'
 import axios from 'axios'
@@ -37,13 +37,13 @@ const DownloadButton = ({ result, downloading, setDownloading }) => {
 
   const handleDownload = async () => {
     if (!isSignedIn) {
-      // Save current search state before redirecting
-      const searchState = {
+      // Save search state and auth flag to sessionStorage before redirecting
+      sessionStorage.setItem('searchState', JSON.stringify({
         searchQuery: window.searchQuery,
         selectedFilters: window.selectedFilters,
         numResults: window.numResults
-      };
-      localStorage.setItem('searchState', JSON.stringify(searchState));
+      }));
+      sessionStorage.setItem('fromAuth', 'true');
       navigate('/sign-in');
       return;
     }
@@ -133,25 +133,48 @@ const MainContent = () => {
   const [downloading, setDownloading] = useState({})
   const filtersRef = useRef(null)
   const { isSignedIn } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   // Expose state to window for DownloadButton access
   window.searchQuery = searchQuery;
   window.selectedFilters = selectedFilters;
   window.numResults = numResults;
 
-  // Restore search state after sign-in
+  // Save search state before unmounting
   useEffect(() => {
-    if (isSignedIn) {
-      const savedState = localStorage.getItem('searchState');
-      if (savedState) {
-        const { searchQuery: savedQuery, selectedFilters: savedFilters, numResults: savedResults } = JSON.parse(savedState);
-        setSearchQuery(savedQuery);
-        setSelectedFilters(savedFilters);
-        setNumResults(savedResults);
-        localStorage.removeItem('searchState'); // Clear saved state
+    return () => {
+      if (searchQuery || Object.values(selectedFilters).some(arr => arr.length > 0) || numResults !== 5) {
+        sessionStorage.setItem('searchState', JSON.stringify({
+          searchQuery,
+          selectedFilters,
+          numResults
+        }));
+      }
+    };
+  }, [searchQuery, selectedFilters, numResults]);
+
+  // Restore search state on mount
+  useEffect(() => {
+    const savedState = sessionStorage.getItem('searchState');
+    if (savedState) {
+      const state = JSON.parse(savedState);
+      setSearchQuery(state.searchQuery || '');
+      setSelectedFilters(state.selectedFilters || {
+        selected_speaker: [],
+        selected_date: [],
+        selected_title: [],
+        selected_company: [],
+        selected_subject: []
+      });
+      setNumResults(state.numResults || 5);
+      
+      // Only clear storage if we're on the main page
+      if (location.pathname === '/') {
+        sessionStorage.removeItem('searchState');
       }
     }
-  }, [isSignedIn]);
+  }, []);
 
   // Handle clicks outside filters
   useEffect(() => {
