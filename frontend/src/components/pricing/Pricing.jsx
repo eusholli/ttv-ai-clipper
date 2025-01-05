@@ -6,6 +6,7 @@ import axios from 'axios';
 import './Pricing.css';
 
 const BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST;
+const FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL;
 
 const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY);
 
@@ -67,7 +68,8 @@ export default function Pricing() {
       const response = await axios.post(`${BACKEND_HOST}/api/create-checkout-session`, 
         {
           priceId: priceId,
-          customerId: currentStripeCustomerId
+          customerId: currentStripeCustomerId,
+          returnUrl: FRONTEND_URL
         },
         {
           headers: { Authorization: `Bearer ${token}` }
