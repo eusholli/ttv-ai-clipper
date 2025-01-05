@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import Pricing from "../pricing/Pricing";
 
-const BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST;
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 const FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL;
 
 // Initialize Stripe
@@ -54,7 +54,7 @@ const UserProfilePage = () => {
       const token = await getToken();
       if (stripeCustomerId) {
         console.log("Making API call to check subscription status");
-        const response = await axios.get(`${BACKEND_HOST}/api/subscription-status?customer_id=${stripeCustomerId}`, {
+        const response = await axios.get(`${BACKEND_URL}/api/subscription-status?customer_id=${stripeCustomerId}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         console.log("Subscription status response:", response.data);
@@ -118,7 +118,7 @@ const UserProfilePage = () => {
       const token = await getToken();
       const currentStripeCustomerId = user.unsafeMetadata?.stripeCustomerId;
       
-      const response = await axios.post(`${BACKEND_HOST}/api/create-checkout-session`, 
+      const response = await axios.post(`${BACKEND_URL}/api/create-checkout-session`, 
         {
           priceId: SUBSCRIPTION_PRICE_ID,
           customerId: currentStripeCustomerId,
@@ -157,7 +157,7 @@ const UserProfilePage = () => {
       }
       
       const response = await axios.post(
-        `${BACKEND_HOST}/api/create-portal-session`,
+        `${BACKEND_URL}/api/create-portal-session`,
         {
           customerId: stripeCustomerId,
           returnUrl: FRONTEND_URL

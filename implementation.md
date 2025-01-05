@@ -55,7 +55,7 @@ TTV AI Clipper is a full-stack application designed to process and manage video 
 ### Environment Configuration
 The frontend uses different environment files for development and production:
 - `.env`: Development configuration with variables:
-  * VITE_BACKEND_HOST
+  * VITE_BACKEND_URL
   * VITE_CLERK_PUBLISHABLE_KEY
 - `.env.production`: Production settings
 
@@ -221,7 +221,7 @@ The authentication system is implemented using Clerk with Stripe integration:
 
    # Frontend
    VITE_CLERK_PUBLISHABLE_KEY=pk_...
-   VITE_BACKEND_HOST=http://localhost:8000
+   VITE_BACKEND_URL=http://localhost:8000
    ```
 
 ### Local Development Steps

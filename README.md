@@ -1,6 +1,6 @@
 # TTV AI Clipper
 
-A full-stack application with a React frontend and Python FastAPI backend for processing and searching Twitch clips. Features include user authentication, clip transcription search, and cloud storage integration.
+A full-stack application with a React frontend and Python FastAPI backend for processing and searching Telecom TV clips. Features include user authentication, clip transcription search, and cloud storage integration.
 
 ## Features
 
