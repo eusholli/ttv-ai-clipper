@@ -59,6 +59,7 @@ async def verify_clerk_token(authorization: Optional[str] = Header(None)):
 class SubscriptionRequest(BaseModel):
     priceId: str
     customerId: Optional[str] = None
+    returnUrl: str  # Base URL for success/cancel redirects
 
 # Initialize search systems
 try:
@@ -182,11 +183,8 @@ async def create_checkout_session(
             customer_id = request.customerId
             logger.info(f"Using existing Stripe customer: {customer_id}")
 
-        # Get the domain from environment variable
-        domain = os.getenv("FRONTEND_URL", "http://localhost:5173")
-
         try:
-            # Create Stripe Checkout Session
+            # Create Stripe Checkout Session with provided return URL
             checkout_session = stripe.checkout.Session.create(
                 customer=customer_id,
                 payment_method_types=['card'],
@@ -195,8 +193,8 @@ async def create_checkout_session(
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url=f'{domain}/user-profile?success=true',
-                cancel_url=f'{domain}/user-profile?canceled=true',
+                success_url=f'{request.returnUrl}/user-profile?success=true',
+                cancel_url=f'{request.returnUrl}/user-profile?canceled=true',
                 allow_promotion_codes=True,
             )
             logger.info(f"Created checkout session for customer {customer_id}")
@@ -213,28 +211,29 @@ async def create_checkout_session(
         logger.error(f"Unexpected error in create_checkout_session: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+class PortalRequest(BaseModel):
+    customerId: str
+    returnUrl: str  # Base URL for portal return
+
 @app.post("/api/create-portal-session")
 async def create_portal_session(
-    customer_id: str,
+    request: PortalRequest,
     token: str = Depends(verify_clerk_token)
 ):
     """Create a Stripe Customer Portal session"""
     try:
-        if not customer_id:
+        if not request.customerId:
             raise HTTPException(status_code=400, detail="Customer ID is required")
             
-        logger.info(f"Creating portal session for customer: {customer_id}")
-        
-        # Get the domain from environment variable
-        domain = os.getenv("FRONTEND_URL", "http://localhost:5173")
+        logger.info(f"Creating portal session for customer: {request.customerId}")
         
         try:
-            # Create the portal session
+            # Create the portal session with provided return URL
             session = stripe.billing_portal.Session.create(
-                customer=customer_id,
-                return_url=f'{domain}/user-profile'
+                customer=request.customerId,
+                return_url=f'{request.returnUrl}/user-profile'
             )
-            logger.info(f"Created portal session for customer {customer_id}")
+            logger.info(f"Created portal session for customer {request.customerId}")
             
             return {"url": session.url}
         except stripe.error.StripeError as e:

@@ -6,6 +6,7 @@ import axios from "axios";
 import Pricing from "../pricing/Pricing";
 
 const BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST;
+const FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL;
 
 // Initialize Stripe
 const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY);
@@ -74,8 +75,16 @@ const UserProfilePage = () => {
     if (user) {
       console.log("User loaded, current metadata:", user.unsafeMetadata);
       checkSubscription();
+      
+      // Only redirect if we came from authentication
+      const fromAuth = sessionStorage.getItem('fromAuth');
+      if (fromAuth === 'true') {
+        sessionStorage.removeItem('fromAuth');
+        navigate('/', { replace: true });
+        return;
+      }
     }
-  }, [user]);
+  }, [user, navigate]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -112,7 +121,8 @@ const UserProfilePage = () => {
       const response = await axios.post(`${BACKEND_HOST}/api/create-checkout-session`, 
         {
           priceId: SUBSCRIPTION_PRICE_ID,
-          customerId: currentStripeCustomerId
+          customerId: currentStripeCustomerId,
+          returnUrl: FRONTEND_URL
         },
         {
           headers: { Authorization: `Bearer ${token}` }
@@ -146,10 +156,12 @@ const UserProfilePage = () => {
         throw new Error("No Stripe Customer ID found");
       }
       
-      // Changed to use query parameter instead of request body
       const response = await axios.post(
-        `${BACKEND_HOST}/api/create-portal-session?customer_id=${stripeCustomerId}`,
-        {},  // Empty body since we're using query parameter
+        `${BACKEND_HOST}/api/create-portal-session`,
+        {
+          customerId: stripeCustomerId,
+          returnUrl: FRONTEND_URL
+        },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
