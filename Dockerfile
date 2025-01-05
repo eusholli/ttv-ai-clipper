@@ -3,7 +3,7 @@ FROM node:20-slim AS frontend-build
 WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm install
-COPY frontend/.env .
+COPY frontend/.env.production .env
 COPY frontend/ .
 RUN npm run build
 

@@ -5,11 +5,12 @@ dist
 dist-ssr
 *.local
 
-# Env files (but allow frontend/.env)
+# Env files (but allow frontend/.env and frontend/.env.production)
 .env
 .env.*
 !.env.example
 !frontend/.env
+!frontend/.env.production
 
 # Logs
 logs
