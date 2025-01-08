@@ -12,6 +12,7 @@ import SignUpPage from './components/auth/SignUp'
 import UserProfilePage from './components/auth/UserProfile'
 import Navigation from './components/auth/Navigation'
 import Pricing from './components/pricing/Pricing'
+import IngestManager from './components/admin/IngestManager'
 
 // Download icon component
 const DownloadIcon = () => (
@@ -555,6 +556,14 @@ function App() {
                   <Navigate to="/user-profile" replace />
                 </ProtectedRoute>
               } 
+            />
+            <Route
+              path="/admin/ingest"
+              element={
+                <ProtectedRoute>
+                  <IngestManager />
+                </ProtectedRoute>
+              }
             />
           </Routes>
         </div>

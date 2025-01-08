@@ -3,7 +3,7 @@
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-VERSION="0.0.1"
+VERSION="0.0.2"
 DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Create and use a new builder instance that supports multi-platform builds

@@ -1,16 +1,20 @@
 # backend/main.py
 import os
-from fastapi import FastAPI, HTTPException, Header, Depends, Request
+from fastapi import FastAPI, HTTPException, Header, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from datetime import datetime
 from dotenv import load_dotenv
 from backend.r2_manager import R2Manager
 import stripe
 from typing import Optional
 from backend.transcript_search import TranscriptSearch
+from backend.job_manager import JobManager, Job
+from backend.workflow_manager import WorkflowManager
+from backend.models import JobStatus, WorkflowState
+from typing import List, Optional, Dict, Any
 import logging
 
 # Configure logging
@@ -32,7 +36,193 @@ if not stripe.api_key:
 if not STRIPE_WEBHOOK_SECRET:
     raise ValueError("STRIPE_WEBHOOK_SECRET environment variable is required")
 
+# Initialize managers
 app = FastAPI()
+job_manager = JobManager()
+workflow_manager = WorkflowManager()
+
+async def verify_clerk_token(authorization: Optional[str] = Header(None)):
+    """Verify Clerk JWT token"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    
+    token = authorization.split(" ")[1]
+    
+    # Get Clerk public key from environment
+    clerk_jwt_key = os.getenv("CLERK_JWT_KEY")
+    if not clerk_jwt_key:
+        raise HTTPException(status_code=500, detail="Clerk JWT key not configured")
+        
+    try:
+        # Verify token using Clerk's public key
+        import jwt
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.backends import default_backend
+        
+        try:
+            # Format the key string with proper PEM structure
+            key_lines = [
+                "-----BEGIN PUBLIC KEY-----",
+                clerk_jwt_key.strip(),  # Remove any whitespace
+                "-----END PUBLIC KEY-----"
+            ]
+            formatted_key = "\n".join(key_lines)
+            
+            # Load the public key
+            public_key = serialization.load_pem_public_key(
+                formatted_key.encode(),
+                backend=default_backend()
+            )
+        except ValueError as e:
+            logger.error(f"Failed to load public key: {str(e)}")
+            raise HTTPException(status_code=500, detail="Invalid public key format")
+            
+        try:
+            # Verify and decode the token
+            decoded = jwt.decode(
+                token,
+                public_key,
+                algorithms=["RS256"]
+            )
+            return decoded
+            
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token has expired")
+        except jwt.InvalidTokenError as e:
+            raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"Token verification error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Token verification failed")
+
+# Job management request models
+class CreateJobRequest(BaseModel):
+    url: str
+    user_email: EmailStr
+
+# Job management endpoints
+@app.post("/api/admin/jobs", response_model=Job)
+async def create_job(
+    request: CreateJobRequest,
+    background_tasks: BackgroundTasks,
+    token: str = Depends(verify_clerk_token)
+):
+    """Create a new ingest job"""
+    job = await job_manager.create_job(request.url, request.user_email)
+    background_tasks.add_task(job_manager.process_job, job.id)
+    return job
+
+@app.get("/api/admin/jobs/{job_id}", response_model=Job)
+async def get_job(
+    job_id: int,
+    token: str = Depends(verify_clerk_token)
+):
+    """Get job status by ID"""
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+@app.get("/api/admin/jobs", response_model=List[Job])
+def list_jobs(
+    user_email: Optional[str] = None,
+    limit: int = 100,
+    token: str = Depends(verify_clerk_token)
+):
+    """List all jobs with optional filtering"""
+    return job_manager.list_jobs(user_email, limit)
+
+# New workflow management endpoints
+@app.get("/api/admin/jobs/{job_id}/details")
+async def get_job_details(
+    job_id: int,
+    token: str = Depends(verify_clerk_token)
+):
+    """Get detailed job information including metadata and transcript"""
+    try:
+        return workflow_manager.get_job_details(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+class MetadataUpdate(BaseModel):
+    title: Optional[str]
+    date: Optional[str]
+    youtube_id: Optional[str]
+    source: Optional[str]
+
+@app.put("/api/admin/jobs/{job_id}/metadata")
+async def update_metadata(
+    job_id: int,
+    metadata: MetadataUpdate,
+    token: str = Depends(verify_clerk_token)
+):
+    """Update job metadata"""
+    try:
+        await workflow_manager.update_metadata(job_id, metadata.dict())
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class TranscriptSegment(BaseModel):
+    segment_hash: str
+    text: str
+    speaker: Optional[str]
+    company: Optional[str]
+    start_time: int
+    end_time: int
+    subjects: List[str]
+
+@app.put("/api/admin/jobs/{job_id}/transcript")
+async def update_transcript(
+    job_id: int,
+    segments: List[TranscriptSegment],
+    token: str = Depends(verify_clerk_token)
+):
+    """Update job transcript segments"""
+    try:
+        await workflow_manager.update_transcript(job_id, [s.dict() for s in segments])
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/admin/jobs/{job_id}/content")
+async def delete_job_content(
+    job_id: int,
+    token: str = Depends(verify_clerk_token)
+):
+    """Delete all content related to a job including cache files"""
+    try:
+        await workflow_manager.delete_content(job_id)            
+        return {"status": "success"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/admin/jobs/archive")
+async def delete_archive(
+    token: str = Depends(verify_clerk_token)
+):
+    """Delete all archived jobs (completed, failed, deleted) and their associated content"""
+    try:
+        await workflow_manager.delete_content_archive()
+        return {
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error deleting archive: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/admin/jobs/{job_id}/log")
+async def get_job_log(
+    job_id: int,
+    token: str = Depends(verify_clerk_token)
+):
+    """Get the latest log file for a job"""
+    log_content = workflow_manager.get_latest_log(job_id)
+    if not log_content:
+        raise HTTPException(status_code=404, detail="No log file found")
+    return {"log": log_content}
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,11 +240,6 @@ except Exception as e:
     logger.error(f"Failed to initialize R2Manager: {e}")
     # Continue without r2_manager functionality
     r2_manager = None
-
-async def verify_clerk_token(authorization: Optional[str] = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization header")
-    return authorization.split(" ")[1]
 
 class SubscriptionRequest(BaseModel):
     priceId: str

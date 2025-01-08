@@ -37,8 +37,6 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install remaining requirements
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# RUN playwright install
-# RUN playwright install-deps
 
     # Create required directories with proper permissions
 RUN mkdir -p /var/log/nginx /var/log/fastapi /var/log/postgresql && \

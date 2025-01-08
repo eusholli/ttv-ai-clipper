@@ -25,4 +25,6 @@ RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 COPY backend/requirements-slow.txt .
 RUN pip install --no-cache-dir -r requirements-slow.txt && \
-    python -m spacy download en_core_web_sm
+    python -m spacy download en_core_web_sm && \
+    playwright install && \
+    playwright install-deps

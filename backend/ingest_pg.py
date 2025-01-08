@@ -5,7 +5,7 @@ import os
 import traceback
 import backoff
 import zipfile
-from r2_manager import R2Manager
+from backend.r2_manager import R2Manager
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
@@ -13,8 +13,8 @@ from typing import Dict, List, Set, Optional, Tuple
 from pathlib import Path
 from bs4 import BeautifulSoup, NavigableString
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-from video_utils import get_youtube_video, generate_clips
-from transcript_search import extract_subject_info, TranscriptSearch
+from backend.video_utils import get_youtube_video, generate_clips
+from backend.transcript_search import extract_subject_info, TranscriptSearch
 import logging
 import logging.handlers
 import time
@@ -32,31 +32,53 @@ for directory in [CACHE_DIR, CLIP_DIR, LOG_DIR]:
     directory.mkdir(exist_ok=True)
 
 # Configure logging with rotation
-def setup_logging():
-    log_file = LOG_DIR / f"ingest_{datetime.now().strftime('%Y%m%d')}.log"
+def setup_logging(job_id=None):
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # File handler with rotation
+    # Create handlers
+    handlers = []
+    
+    # Job-specific log file if job_id is provided
+    if job_id is not None:
+        job_log_file = LOG_DIR / f"job_{job_id}.log"
+        job_handler = logging.handlers.RotatingFileHandler(
+            job_log_file, maxBytes=10*1024*1024, backupCount=5
+        )
+        job_handler.setFormatter(formatter)
+        handlers.append(job_handler)
+    
+    # General log file
+    general_log_file = LOG_DIR / f"ingest_{datetime.now().strftime('%Y%m%d')}.log"
     file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=10*1024*1024, backupCount=5
+        general_log_file, maxBytes=10*1024*1024, backupCount=5
     )
     file_handler.setFormatter(formatter)
+    handlers.append(file_handler)
     
     # Console handler
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
+    handlers.append(console_handler)
     
     # Root logger configuration
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
+    
+    # Remove existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Add new handlers
+    for handler in handlers:
+        root_logger.addHandler(handler)
     
     # Suppress verbose logs from other libraries
     logging.getLogger("moviepy").setLevel(logging.WARNING)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    
+    return job_log_file if job_id is not None else None
 
 # Initialize logging
 setup_logging()
@@ -80,6 +102,8 @@ class ContentProcessor:
         self.executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
         self.r2_manager = R2Manager()
         self.search = TranscriptSearch()
+        from backend.job_manager import JobManager
+        self.job_manager = JobManager()
         self.cleanup_partial_files()
 
     def _time_to_seconds(self, time_str: str) -> int:
@@ -109,7 +133,7 @@ class ContentProcessor:
         )
         return hashlib.md5(hash_string.encode()).hexdigest()
 
-    def process_transcript(self, json_data: dict) -> None:
+    def process_transcript(self, json_data: dict, filename: Optional[str] = None) -> None:
         try:
             transcript = json_data['transcript']
             main_metadata = json_data.get('metadata', {})
@@ -119,6 +143,10 @@ class ContentProcessor:
                 logger.info(f"Deleting existing entries for YouTube ID: {youtube_id}")
                 self.search.cursor.execute('DELETE FROM transcripts WHERE youtube_id = %s', (youtube_id,))
                 self.search.conn.commit()
+                
+                # Mark associated jobs as deleted
+                logger.info(f"Marking jobs as deleted for YouTube ID: {youtube_id}")
+                self.job_manager.mark_job_deleted(youtube_id)
             
             new_count = 0
             skipped = 0
@@ -199,6 +227,14 @@ class ContentProcessor:
                     self.search.conn.rollback()
                     raise e
             
+            # Store JSON file in database after successful ingestion
+            if filename:
+                try:
+                    self.search.add_json_file(filename, json.dumps(json_data, ensure_ascii=False))
+                    logger.info(f"Stored JSON file {filename} in database")
+                except Exception as e:
+                    logger.error(f"Failed to store JSON file {filename} in database: {str(e)}")
+
             logger.info(f"Added {new_count} new transcript segments")
             logger.info(f"Skipped {skipped} existing segments")
             
@@ -348,7 +384,7 @@ class ContentProcessor:
                                 'company': saved_info['company'] or "Unknown",
                                 'start_timestamp': self._time_to_seconds(saved_info['timestamp']),
                                 'end_timestamp': self._time_to_seconds(speaker_info['timestamp']),
-                                'subjects': extract_subject_info(text)
+                                'subjects': extract_subject_info(text, self.search.nlp)
                             },
                             text=text
                         ))
@@ -362,7 +398,7 @@ class ContentProcessor:
                                 'company': saved_info['company'] or "Unknown",
                                 'start_timestamp': self._time_to_seconds(saved_info['timestamp']),
                                 'end_timestamp': self._time_to_seconds(speaker_info['timestamp']),
-                                'subjects': extract_subject_info(text)
+                                'subjects': extract_subject_info(text, self.search.nlp)
                             },
                             text=text
                         ))
@@ -376,100 +412,186 @@ class ContentProcessor:
                     'company': saved_info['company'] or "Unknown",
                     'start_timestamp': self._time_to_seconds(saved_info['timestamp']),
                     'end_timestamp': self._time_to_seconds("00:00:00"),
-                    'subjects': extract_subject_info(text)
+                    'subjects': extract_subject_info(text, self.search.nlp)
                 },
                 text=text
             ))
 
         return parsed_segments
 
-    async def process_url(self, url: str) -> Optional[VideoInfo]:
+    async def process_url(self, url: str, job_id: Optional[int] = None) -> Optional[VideoInfo]:
+        # Setup job-specific logging if job_id is provided
+        job_log_file = None
+        if job_id is not None:
+            job_log_file = setup_logging(job_id)
         """Process URL with caching and error recovery"""
         html_path, json_path = self.get_cached_url(url)
 
-        # Check if already processed by looking for the JSON result file
-        if json_path.exists() and json_path.stat().st_size > 0:
-            logger.info(f"URL {url} already processed successfully")
-            # Process existing transcript
+        # Update workflow state if job_id is provided
+        if job_id:
+            from backend.workflow_manager import WorkflowManager
+            workflow_manager = WorkflowManager()
+            await workflow_manager.update_workflow_state(job_id, 'fetching_html')
+
+        # Check if HTML already fetched successfully
+        if html_path.exists() and html_path.stat().st_size > 0:
+            logger.info(f"HTML for {url} already fetched successfully")
+            if job_id:
+                self.search.cursor.execute('''
+                    UPDATE ingest_jobs 
+                    SET html_fetched_at = CURRENT_TIMESTAMP,
+                        html_fetch_success = true
+                    WHERE id = %s
+                ''', (job_id,))
+                self.search.conn.commit()
+                
+                from backend.workflow_manager import WorkflowManager
+                workflow_manager = WorkflowManager()
+                await workflow_manager.update_workflow_state(job_id, 'html_fetched')
+        else:
             try:
-                logger.info("Processing existing transcript...")
-                with open(json_path, 'r') as f:
-                    json_data = json.load(f)
-                self.process_transcript(json_data)
-                logger.info("Successfully processed existing transcript")
-            except Exception as e:
-                logger.error(f"Error processing existing transcript: {str(e)}")
-            return self.load_cached_result(url)
-
-        start_time = time.time()
-
-        # Clean up any existing failed artifacts for this URL
-        for path in [html_path, json_path]:
-            if path.exists() and path.stat().st_size == 0:
-                logger.info(f"Removing empty file: {path}")
-                path.unlink()
-
-        try:
-            # Fetch and cache HTML if needed
-            if not html_path.exists() or html_path.stat().st_size == 0:
+                # Fetch and cache HTML
                 logger.info(f"Fetching content for {url}")
                 content = await self.get_client_rendered_content(url)
                 if content:
                     html_path.write_text(content, encoding='utf-8')
-            else:
-                content = html_path.read_text(encoding='utf-8')
+                    if job_id:
+                        self.search.cursor.execute('''
+                            UPDATE ingest_jobs 
+                            SET html_fetched_at = CURRENT_TIMESTAMP,
+                                html_fetch_success = true
+                            WHERE id = %s
+                        ''', (job_id,))
+                        self.search.conn.commit()
+                        
+                        from backend.workflow_manager import WorkflowManager
+                        workflow_manager = WorkflowManager()
+                        await workflow_manager.update_workflow_state(job_id, 'html_fetched')
+                else:
+                    raise Exception("Failed to fetch HTML content")
+            except Exception as e:
+                if job_id:
+                    from backend.workflow_manager import WorkflowManager
+                    workflow_manager = WorkflowManager()
+                    await workflow_manager.update_workflow_state(job_id, 'failed', str(e))
+                raise
 
-            # Extract information
+        try:
+            # Extract information from HTML
+            content = html_path.read_text(encoding='utf-8')
             info = self.extract_info(content)
             if not info:
                 raise Exception("Failed to extract information from content")
 
-            # Process video and generate clips
+            if job_id:
+                from backend.workflow_manager import WorkflowManager
+                workflow_manager = WorkflowManager()
+                await workflow_manager.update_workflow_state(job_id, 'editing_metadata')
+
+            # Check for edited metadata
+            if job_id:
+                self.search.cursor.execute('''
+                    SELECT title, date, youtube_id, source
+                    FROM edited_metadata
+                    WHERE job_id = %s
+                ''', (job_id,))
+                edited_metadata = self.search.cursor.fetchone()
+                if edited_metadata:
+                    info.metadata.update({
+                        'title': edited_metadata[0],
+                        'date': edited_metadata[1],
+                        'youtube_id': edited_metadata[2],
+                        'source': edited_metadata[3]
+                    })
+
+            # Process video if needed
             if info.metadata.get('youtube_id'):
                 youtube_id = info.metadata['youtube_id']
-                # Update video path with youtube_id
                 video_path = self.get_cached_video(youtube_id)
+
+                if job_id:
+                    from backend.workflow_manager import WorkflowManager
+                    workflow_manager = WorkflowManager()
+                    await workflow_manager.update_workflow_state(job_id, 'fetching_video')
                 
                 # Check if video needs to be downloaded
                 if not video_path.exists() or video_path.stat().st_size == 0:
                     logger.info(f"Downloading video {youtube_id}")
                     if not get_youtube_video(str(self.cache_dir), youtube_id):
                         raise Exception(f"Failed to download video {youtube_id}")
+                    
+                    if job_id:
+                        self.search.cursor.execute('''
+                            UPDATE ingest_jobs 
+                            SET video_fetched_at = CURRENT_TIMESTAMP,
+                                video_fetch_success = true
+                            WHERE id = %s
+                        ''', (job_id,))
+                        self.search.conn.commit()
+                        
+                        from backend.workflow_manager import WorkflowManager
+                        workflow_manager = WorkflowManager()
+                        await workflow_manager.update_workflow_state(job_id, 'video_fetched')
                 else:
                     logger.info(f"Video {youtube_id} already cached at {video_path}")
 
-                # Check if clips exist in R2 storage
-                test_clip_name = f"{youtube_id}_0.mp4"  # First clip usually exists
-                if self.r2_manager.file_exists(test_clip_name):
-                    logger.info(f"Clips already exist in R2 storage for {youtube_id}")
-                else:
-                    # Generate and upload clips if they don't exist
-                    if info.transcript:
-                        logger.info(f"Generating clips for {youtube_id}")
-                        info_dict = asdict(info)
-                        info_dict['transcript'] = await asyncio.get_event_loop().run_in_executor(
-                            self.executor,
-                            generate_clips,
-                            str(self.cache_dir),
-                            info_dict
-                        )
-                        info = VideoInfo(
-                            metadata=info_dict['metadata'],
-                            transcript=[TranscriptSegment(**segment) for segment in info_dict['transcript']]
-                        )
-                        
-                        # Upload newly generated clips to R2
-                        clip_pattern = f"{youtube_id}_*.mp4"
-                        new_clips = list(self.clip_dir.glob(clip_pattern))
-                        upload_success = True
-                        for clip in new_clips:
-                            if not self.r2_manager.upload_file(str(clip), clip.name):
-                                upload_success = False
-                                logger.error(f"Failed to upload clip {clip.name} to R2")
-                                break
-                        
-                        if not upload_success:
-                            raise Exception("Failed to upload clips to R2 storage")
+                # Check for edited transcript
+                if job_id:
+                    self.search.cursor.execute('''
+                        SELECT segment_hash, text, speaker, company, 
+                               start_time, end_time, subjects
+                        FROM edited_transcripts
+                        WHERE job_id = %s
+                        ORDER BY start_time
+                    ''', (job_id,))
+                    edited_segments = self.search.cursor.fetchall()
+                    if edited_segments:
+                        info.transcript = [
+                            TranscriptSegment(
+                                metadata={
+                                    'segment_hash': seg[0],
+                                    'speaker': seg[2],
+                                    'company': seg[3],
+                                    'start_timestamp': seg[4],
+                                    'end_timestamp': seg[5],
+                                    'subjects': seg[6]
+                                },
+                                text=seg[1]
+                            ) for seg in edited_segments
+                        ]
+
+                if job_id:
+                    from backend.workflow_manager import WorkflowManager
+                    workflow_manager = WorkflowManager()
+                    await workflow_manager.update_workflow_state(job_id, 'generating_clips')
+
+                # Generate and upload clips
+                if info.transcript:
+                    logger.info(f"Generating clips for {youtube_id}")
+                    info_dict = asdict(info)
+                    info_dict['transcript'] = await asyncio.get_event_loop().run_in_executor(
+                        self.executor,
+                        generate_clips,
+                        str(self.cache_dir),
+                        info_dict
+                    )
+                    info = VideoInfo(
+                        metadata=info_dict['metadata'],
+                        transcript=[TranscriptSegment(**segment) for segment in info_dict['transcript']]
+                    )
+                    
+                    # Upload clips to R2
+                    clip_pattern = f"{youtube_id}_*.mp4"
+                    new_clips = list(self.clip_dir.glob(clip_pattern))
+                    upload_success = True
+                    for clip in new_clips:
+                        if not self.r2_manager.upload_file(str(clip), clip.name):
+                            upload_success = False
+                            logger.error(f"Failed to upload clip {clip.name} to R2")
+                            break
+                    
+                    if not upload_success:
+                        raise Exception("Failed to upload clips to R2 storage")
 
             # Save results
             json_path.write_text(
@@ -482,18 +604,60 @@ class ContentProcessor:
                 logger.info("Processing transcript...")
                 with open(json_path, 'r') as f:
                     json_data = json.load(f)
-                self.process_transcript(json_data)
+                self.process_transcript(json_data, filename=json_path.name)
                 logger.info("Successfully processed transcript")
+
+                if job_id:
+                    from backend.workflow_manager import WorkflowManager
+                    workflow_manager = WorkflowManager()
+                    await workflow_manager.update_workflow_state(job_id, 'completed')
+
             except Exception as e:
                 logger.error(f"Error processing transcript: {str(e)}")
-                # Continue execution as the main processing was successful
+                if job_id:
+                    from backend.workflow_manager import WorkflowManager
+                    workflow_manager = WorkflowManager()
+                    await workflow_manager.update_workflow_state(job_id, 'failed', str(e))
+                raise
 
-            logger.info(f"Successfully processed {url} in {time.time() - start_time:.2f}s")
+            # Update job log in database if job_id is provided
+            if job_id and job_log_file:
+                try:
+                    with open(job_log_file, 'r') as f:
+                        log_content = f.read()
+                    self.search.cursor.execute('''
+                        UPDATE ingest_jobs 
+                        SET last_log_file = %s
+                        WHERE id = %s
+                    ''', (log_content, job_id))
+                    self.search.conn.commit()
+                except Exception as log_e:
+                    logger.error(f"Failed to update job log in database: {str(log_e)}")
+            
             return info
 
         except Exception as e:
             error_msg = f"Error processing {url}: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_msg)
+            if job_id:
+                from backend.workflow_manager import WorkflowManager
+                workflow_manager = WorkflowManager()
+                await workflow_manager.update_workflow_state(job_id, 'failed', error_msg)
+                
+                # Update job log in database even on failure
+                if job_log_file:
+                    try:
+                        with open(job_log_file, 'r') as f:
+                            log_content = f.read()
+                        self.search.cursor.execute('''
+                            UPDATE ingest_jobs 
+                            SET last_log_file = %s
+                            WHERE id = %s
+                        ''', (log_content, job_id))
+                        self.search.conn.commit()
+                    except Exception as log_e:
+                        logger.error(f"Failed to update job log in database: {str(log_e)}")
+            
             return None
 
     def load_cached_result(self, url: str) -> Optional[VideoInfo]:
@@ -600,7 +764,7 @@ async def process_zip_file(zip_path: Path) -> None:
                 logger.info(f"Processing {json_file.name}")
                 with open(json_file, 'r') as f:
                     json_data = json.load(f)
-                processor.process_transcript(json_data)
+                processor.process_transcript(json_data, filename=json_file.name)
                 logger.info(f"Successfully processed {json_file.name}")
                 
                 # Copy processed JSON file to CACHE_DIR

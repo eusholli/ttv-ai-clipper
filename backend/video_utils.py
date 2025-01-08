@@ -3,7 +3,7 @@ import os
 import requests
 from pytube import YouTube
 import yt_dlp
-from r2_manager import R2Manager
+from backend.r2_manager import R2Manager
 
 
 CLIP_DIR = "clip/"

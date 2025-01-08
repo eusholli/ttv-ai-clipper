@@ -1,2 +1,4 @@
 sentence-transformers
 spacy
+playwright
+

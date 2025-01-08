@@ -1,5 +1,6 @@
 uvicorn
 fastapi
+PyJWT[crypto]>=2.0.0
 python-dotenv
 numpy
 pydantic
@@ -7,7 +8,6 @@ boto3
 stripe
 psycopg2-binary
 python-json-logger
-playwright
 backoff
 bs4
 yt_dlp
@@ -16,3 +16,4 @@ moviepy
 sqlalchemy
 pg8000
 cloud-sql-python-connector[pg8000]
+pydantic[email]

@@ -44,6 +44,9 @@ const Navigation = () => {
             <Link to="/user-profile" className="nav-link" onClick={() => setIsMenuOpen(false)}>
               My Subscription
             </Link>
+            <Link to="/admin/ingest" className="nav-link" onClick={() => setIsMenuOpen(false)}>
+              Admin Ingest
+            </Link>
             <button 
               onClick={() => {
                 handleSignOut();
