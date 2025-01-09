@@ -198,13 +198,19 @@ const MainContent = () => {
 
       if (!clickedInsideDropdown && openDropdown) {
         setOpenDropdown(null);
-        handleSearch();
       }
     }
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [openDropdown]);
+
+  // Trigger search when dropdown closes
+  useEffect(() => {
+    if (openDropdown === null) {
+      handleSearch();
     }
   }, [openDropdown]);
 
@@ -319,7 +325,6 @@ const MainContent = () => {
     const handleEscapeKey = (e) => {
       if (e.key === 'Escape' && openDropdown) {
         setOpenDropdown(null);
-        handleSearch();
       }
     };
 
@@ -355,10 +360,13 @@ const MainContent = () => {
           .find(([_, v]) => v === value)?.[0];
         if (!displayString) return prev;
       }
-      return {
+      const newFilters = {
         ...prev,
         [filterType]: prev[filterType].filter(item => item !== value)
       };
+      // Schedule a search after state update
+      setTimeout(handleSearch, 0);
+      return newFilters;
     });
   }
 
@@ -449,9 +457,6 @@ const MainContent = () => {
                       onKeyDown={(e) => {
                         if (e.key === 'Escape') {
                           setOpenDropdown(null);
-                          if (openDropdown) {
-                            handleSearch();
-                          }
                         }
                       }}
                       placeholder={`Filter ${label.toLowerCase()}...`}
