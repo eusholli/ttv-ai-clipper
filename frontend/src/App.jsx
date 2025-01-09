@@ -131,6 +131,13 @@ const MainContent = () => {
   })
   const [numResults, setNumResults] = useState(5)
   const [openDropdown, setOpenDropdown] = useState(null)
+  const [filterText, setFilterText] = useState({
+    selected_speaker: '',
+    selected_date: '',
+    selected_title: '',
+    selected_company: '',
+    selected_subject: ''
+  })
   const [downloading, setDownloading] = useState({})
   const filtersRef = useRef(null)
   const { isSignedIn } = useAuth();
@@ -180,16 +187,26 @@ const MainContent = () => {
   // Handle clicks outside filters
   useEffect(() => {
     function handleClickOutside(event) {
-      if (filtersRef.current && !filtersRef.current.contains(event.target)) {
-        setOpenDropdown(null)
+      const filterDropdowns = document.querySelectorAll('.filter-dropdown');
+      let clickedInsideDropdown = false;
+      
+      filterDropdowns.forEach(dropdown => {
+        if (dropdown.contains(event.target)) {
+          clickedInsideDropdown = true;
+        }
+      });
+
+      if (!clickedInsideDropdown && openDropdown) {
+        setOpenDropdown(null);
+        handleSearch();
       }
     }
 
-    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('mousedown', handleClickOutside);
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [])
+  }, [openDropdown]);
 
   // Fetch available filters on component mount with retry logic
   useEffect(() => {
@@ -214,18 +231,11 @@ const MainContent = () => {
     fetchFilters();
   }, [])
 
-  // Effect to trigger search when filters change or when restored from localStorage
-  useEffect(() => {
-    if (searchQuery || Object.values(selectedFilters).some(arr => arr.length > 0)) {
-      handleSearch();
-    }
-  }, [selectedFilters]);
-
   // Validate and adjust number of results
   const validateNumResults = (value) => {
     const num = parseInt(value) || 5;
     if (num < 5) return 5;
-    if (num > 20) return 20;
+    if (num > 500) return 500;
     return num;
   }
 
@@ -297,10 +307,27 @@ const MainContent = () => {
           : currentValues.filter((_, index) => index !== valueIndex);
       }
 
-      setOpenDropdown(null);
       return { ...prev, [filterType]: newValues };
     });
+
+    // Keep the dropdown open after selection
+    // It will be closed by Escape key or clicking outside
   }
+
+  // Add global keyboard event listener for Escape key
+  useEffect(() => {
+    const handleEscapeKey = (e) => {
+      if (e.key === 'Escape' && openDropdown) {
+        setOpenDropdown(null);
+        handleSearch();
+      }
+    };
+
+    document.addEventListener('keydown', handleEscapeKey);
+    return () => {
+      document.removeEventListener('keydown', handleEscapeKey);
+    };
+  }, [openDropdown]);
 
   // Handle number of results change
   const handleNumResultsChange = (e) => {
@@ -338,7 +365,7 @@ const MainContent = () => {
   const filterMappings = {
     selected_speaker: { label: 'Speakers', values: filters.speakers },
     selected_date: { label: 'Dates', values: filters.dates },
-    selected_title: { label: 'Titles', values: filters.titles },
+    selected_title: { label: 'Video Titles', values: filters.titles },
     selected_company: { label: 'Companies', values: filters.companies },
     selected_subject: { 
       label: 'Subjects', 
@@ -391,17 +418,51 @@ const MainContent = () => {
             <div className="filters-container" ref={filtersRef}>
               {Object.entries(filterMappings).map(([filterType, { label, values, getDisplayValue }]) => (
                 <div key={filterType} className="filter-group">
-                  <label className="filter-label">{label}</label>
+                  <div className="filter-label-container">
+                    <label className="filter-label">{label}</label>
+                    {selectedFilters[filterType].length > 0 && (
+                      <button
+                        className="filter-clear-button visible"
+                        onClick={() => {
+                          setSelectedFilters(prev => ({
+                            ...prev,
+                            [filterType]: []
+                          }));
+                          handleSearch();
+                        }}
+                        aria-label={`Clear ${label} filters`}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
                   <div className="filter-dropdown">
-                    <button 
-                      className="dropdown-button"
+                    <input
+                      type="text"
+                      className="dropdown-button filter-input"
+                      value={filterText[filterType]}
+                      onChange={(e) => setFilterText(prev => ({
+                        ...prev,
+                        [filterType]: e.target.value
+                      }))}
                       onClick={() => toggleDropdown(filterType)}
-                    >
-                      Select {label}
-                    </button>
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          setOpenDropdown(null);
+                          if (openDropdown) {
+                            handleSearch();
+                          }
+                        }
+                      }}
+                      placeholder={`Filter ${label.toLowerCase()}...`}
+                    />
                     {openDropdown === filterType && (
                       <div className="dropdown-content">
-                        {values.map(value => {
+                        {values.filter(value => {
+                          const searchText = filterText[filterType].toLowerCase();
+                          const displayValue = getDisplayValue ? getDisplayValue(value) : value;
+                          return displayValue.toLowerCase().includes(searchText);
+                        }).map(value => {
                           const displayValue = getDisplayValue ? getDisplayValue(value) : value;
                           const selectedValue = filterType === 'selected_subject' 
                             ? filters.subjects[value]
@@ -413,6 +474,9 @@ const MainContent = () => {
                               onClick={() => handleFilterChange(filterType, value)}
                             >
                               {displayValue}
+                              {selectedFilters[filterType].includes(selectedValue) && (
+                                <span className="checkmark">✓</span>
+                              )}
                             </div>
                           );
                         })}
@@ -439,7 +503,7 @@ const MainContent = () => {
               ))}
 
               <div className="filter-group">
-                <label className="filter-label">Results</label>
+                <label className="filter-label">Results (5-500)</label>
                 <input
                   type="number"
                   value={numResults}
