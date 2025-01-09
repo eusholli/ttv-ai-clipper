@@ -1,6 +1,9 @@
 # backend/main.py
 import os
-from fastapi import FastAPI, HTTPException, Header, Depends, Request
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from fastapi import FastAPI, HTTPException, Header, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from typing import List, Optional
@@ -23,6 +26,16 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+
+# Email configuration
+SMTP_SERVER = os.getenv("SMTP_SERVER")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+FROM_EMAIL = os.getenv("FROM_EMAIL")
+
+if not all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD, FROM_EMAIL]):
+    logger.warning("Email configuration missing. Email functionality will be disabled.")
 
 # Initialize Stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
@@ -333,6 +346,65 @@ async def stripe_webhook(request: Request):
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/email-clip/{segment_hash}")
+async def email_clip(
+    segment_hash: str,
+    token: dict = Depends(verify_clerk_token)
+):
+    """Email a clip to the user's verified email address"""
+    try:
+        if not all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD, FROM_EMAIL]):
+            raise HTTPException(status_code=503, detail="Email service not configured")
+
+        # Get clip metadata
+        clip = transcript_search.get_metadata_by_hash(segment_hash)
+        if not clip or 'download' not in clip:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        # Get user's email from Clerk token
+        user_email = token.get('email_address')
+        if not user_email:
+            logger.error(f"No email_address found in token: {token}")
+            raise HTTPException(status_code=400, detail="No email address found in token")
+
+        # Get the video URL from R2
+        url, _ = r2_manager.get_video_url_and_content(os.path.basename(clip['download']))
+        if not url:
+            raise HTTPException(status_code=404, detail="Clip URL not found")
+
+        # Create email message
+        msg = MIMEMultipart()
+        msg['From'] = FROM_EMAIL
+        msg['To'] = user_email
+        msg['Subject'] = f"Your Requested Clip: {clip.get('title', 'Untitled')}"
+
+        # Email body with clip details and download link
+        body = f"""
+        Here is your requested clip:
+        
+        Title: {clip.get('title', 'Untitled')}
+        Speaker: {clip.get('speaker', 'Unknown')}
+        Company: {clip.get('company', 'Unknown')}
+        Time: {clip.get('start_time', 0)} - {clip.get('end_time', 0)}
+        
+        Download Link: {url}
+        
+        This link will expire in 24 hours.
+        """
+        msg.attach(MIMEText(body, 'plain'))
+
+        # Send email
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        return {"status": "success", "message": f"Email sent to {user_email}"}
+
+    except Exception as e:
+        logger.error(f"Error sending email: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
 
 @app.get("/api/version")
 async def get_version():

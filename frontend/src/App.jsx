@@ -20,6 +20,87 @@ const DownloadIcon = () => (
   </svg>
 )
 
+// Email icon component
+const EmailIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+    <polyline points="22,6 12,13 2,6"/>
+  </svg>
+)
+
+// Email Button Component
+const EmailButton = ({ result, emailing, setEmailing }) => {
+  const { isSignedIn, getToken } = useAuth();
+  const { user } = useUser();
+  const navigate = useNavigate();
+
+  const handleEmail = async () => {
+    if (!isSignedIn) {
+      sessionStorage.setItem('searchState', JSON.stringify({
+        searchQuery: window.searchQuery,
+        selectedFilters: window.selectedFilters,
+        numResults: window.numResults
+      }));
+      sessionStorage.setItem('fromAuth', 'true');
+      navigate('/sign-in');
+      return;
+    }
+
+    try {
+      // Check subscription status first
+      const token = await getToken();
+      const stripeCustomerId = user?.unsafeMetadata?.stripeCustomerId;
+      
+      if (!stripeCustomerId) {
+        navigate('/user-profile');
+        return;
+      }
+
+      const response = await axios.get(`${BACKEND_URL}/api/subscription-status?customer_id=${stripeCustomerId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.data.status !== 'active') {
+        navigate('/user-profile');
+        return;
+      }
+
+      setEmailing({ ...emailing, [result.segment_hash]: true });
+      
+      const emailResponse = await axios.post(
+        `${BACKEND_URL}/api/email-clip/${result.segment_hash}`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` }}
+      );
+
+      if (emailResponse.data.status === 'success') {
+        alert('Email sent successfully!');
+      }
+    } catch (err) {
+      console.error('Error emailing clip:', err);
+      if (err.response?.status === 403) {
+        navigate('/pricing');
+      } else {
+        alert(`Failed to email clip:\n${err.message}`);
+      }
+    } finally {
+      setEmailing({ ...emailing, [result.segment_hash]: false });
+    }
+  };
+
+  return (
+    <button
+      className="email-button"
+      onClick={handleEmail}
+      disabled={emailing[result.segment_hash]}
+    >
+      <EmailIcon />
+      {emailing[result.segment_hash] ? 'Sending...' : 
+       !isSignedIn ? 'Subscribe to Email' : 'Email clip to me'}
+    </button>
+  );
+};
+
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
   return (
@@ -138,6 +219,7 @@ const MainContent = () => {
     selected_subject: ''
   })
   const [downloading, setDownloading] = useState({})
+  const [emailing, setEmailing] = useState({})
   const filtersRef = useRef(null)
   const { isSignedIn } = useAuth();
   const navigate = useNavigate();
@@ -554,11 +636,18 @@ const MainContent = () => {
                         allowFullScreen
                       />
                       {result.download && (
-                        <DownloadButton 
-                          result={result}
-                          downloading={downloading}
-                          setDownloading={setDownloading}
-                        />
+                        <>
+                          <DownloadButton 
+                            result={result}
+                            downloading={downloading}
+                            setDownloading={setDownloading}
+                          />
+                          <EmailButton
+                            result={result}
+                            emailing={emailing}
+                            setEmailing={setEmailing}
+                          />
+                        </>
                       )}
                     </div>
                   </article>
