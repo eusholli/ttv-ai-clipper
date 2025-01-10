@@ -272,9 +272,87 @@ body {
   flex: 1;
 }
 
+.result-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.clip-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  margin: 0;
+}
+
+.email-all-container {
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.unselect-all-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.5rem;
+  background-color: #003366;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background-color 0.3s;
+  margin-right: 1rem;
+}
+
+.unselect-all-button:hover {
+  background-color: #004488;
+}
+
+.unselect-all-button.inactive {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.unselect-all-button.inactive:hover {
+  background-color: #ccc;
+}
+
+.email-all-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.5rem;
+  background-color: #003366;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background-color 0.3s;
+}
+
+.email-all-button:hover {
+  background-color: #004488;
+}
+
+.email-all-button.inactive {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.email-all-button.inactive:hover {
+  background-color: #ccc;
+}
+
 .result-title {
-  margin: 0 0 0.5rem;
+  margin: 0;
   color: #003366;
+  flex: 1;
+  display: flex;
+  align-items: center;
 }
 
 .result-meta {

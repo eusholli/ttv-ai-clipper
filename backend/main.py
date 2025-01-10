@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from typing import List, Optional
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from backend.r2_manager import R2Manager
 import stripe
@@ -65,10 +65,59 @@ except Exception as e:
     r2_manager = None
 
 async def verify_clerk_token(authorization: Optional[str] = Header(None)):
+    """Verify Clerk JWT token"""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header")
-    return authorization.split(" ")[1]
+    
+    token = authorization.split(" ")[1]
+    
+    # Get Clerk public key from environment
+    clerk_jwt_key = os.getenv("CLERK_JWT_KEY")
+    if not clerk_jwt_key:
+        raise HTTPException(status_code=500, detail="Clerk JWT key not configured")
+        
+    try:
+        # Verify token using Clerk's public key
+        import jwt
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.backends import default_backend
+        
+        try:
+            # Format the key string with proper PEM structure
+            key_lines = [
+                "-----BEGIN PUBLIC KEY-----",
+                clerk_jwt_key.strip(),  # Remove any whitespace
+                "-----END PUBLIC KEY-----"
+            ]
+            formatted_key = "\n".join(key_lines)
+            
+            # Load the public key
+            public_key = serialization.load_pem_public_key(
+                formatted_key.encode(),
+                backend=default_backend()
+            )
+        except ValueError as e:
+            logger.error(f"Failed to load public key: {str(e)}")
+            raise HTTPException(status_code=500, detail="Invalid public key format")
+            
+        try:
+            # Verify and decode the token
+            decoded = jwt.decode(
+                token,
+                public_key,
+                algorithms=["RS256"]
+            )
+            return decoded
 
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token has expired")
+        except jwt.InvalidTokenError as e:
+            raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"Token verification error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Token verification failed")
+            
 class SubscriptionRequest(BaseModel):
     priceId: str
     customerId: Optional[str] = None
@@ -347,6 +396,78 @@ async def stripe_webhook(request: Request):
         logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
+class BatchEmailRequest(BaseModel):
+    segment_hashes: List[str]
+
+@app.post("/api/email-clips")
+async def email_clips(
+    request: BatchEmailRequest,
+    token: str = Depends(verify_clerk_token)
+):
+    """Email multiple clips to the user's verified email address"""
+    try:
+        if not all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD, FROM_EMAIL]):
+            raise HTTPException(status_code=503, detail="Email service not configured")
+
+        # Get user's email from Clerk token
+        user_email = token.get('email_address')
+        if not user_email:
+            logger.error(f"No email_address found in token: {token}")
+            raise HTTPException(status_code=400, detail="No email address found in token")
+
+        # Create email message
+        msg = MIMEMultipart()
+        msg['From'] = FROM_EMAIL
+        msg['To'] = user_email
+        msg['Subject'] = f"Your Requested Clips ({len(request.segment_hashes)} clips)"
+
+        # Build email body with all clips
+        body = "Here are your requested clips:\n\n"
+        
+        for segment_hash in request.segment_hashes:
+            # Get clip metadata
+            clip = transcript_search.get_metadata_by_hash(segment_hash)
+            if not clip or 'download' not in clip:
+                logger.warning(f"Clip not found: {segment_hash}")
+                continue
+
+            # Get the video URL from R2
+            url, _ = r2_manager.get_video_url_and_content(os.path.basename(clip['download']))
+            if not url:
+                logger.warning(f"Clip URL not found: {segment_hash}")
+                continue
+
+            # Format start and end times as HH:MM:SS
+            start_seconds = int(clip.get('start_time', 0))
+            end_seconds = int(clip.get('end_time', 0))
+            start_time = f"{start_seconds//3600:02d}:{(start_seconds%3600)//60:02d}:{start_seconds%60:02d}"
+            end_time = f"{end_seconds//3600:02d}:{(end_seconds%3600)//60:02d}:{end_seconds%60:02d}"
+
+            # Add clip details to body
+            body += f"""
+Clip: {clip.get('title', 'Untitled')}
+Speaker: {clip.get('speaker', 'Unknown')}
+Company: {clip.get('company', 'Unknown')}
+Time: {start_time} - {end_time}
+Download Link: {url}
+
+"""
+
+        body += "\nThese links will expire in 24 hours."
+        msg.attach(MIMEText(body, 'plain'))
+
+        # Send email
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        return {"status": "success", "message": f"Email sent to {user_email}"}
+
+    except Exception as e:
+        logger.error(f"Error sending email: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+
 @app.post("/api/email-clip/{segment_hash}")
 async def email_clip(
     segment_hash: str,
@@ -379,6 +500,12 @@ async def email_clip(
         msg['To'] = user_email
         msg['Subject'] = f"Your Requested Clip: {clip.get('title', 'Untitled')}"
 
+        # Format start and end times as HH:MM:SS
+        start_seconds = int(clip.get('start_time', 0))
+        end_seconds = int(clip.get('end_time', 0))
+        start_time = f"{start_seconds//3600:02d}:{(start_seconds%3600)//60:02d}:{start_seconds%60:02d}"
+        end_time = f"{end_seconds//3600:02d}:{(end_seconds%3600)//60:02d}:{end_seconds%60:02d}"
+
         # Email body with clip details and download link
         body = f"""
         Here is your requested clip:
@@ -386,7 +513,7 @@ async def email_clip(
         Title: {clip.get('title', 'Untitled')}
         Speaker: {clip.get('speaker', 'Unknown')}
         Company: {clip.get('company', 'Unknown')}
-        Time: {clip.get('start_time', 0)} - {clip.get('end_time', 0)}
+        Time: {start_time} - {end_time}
         
         Download Link: {url}
         
