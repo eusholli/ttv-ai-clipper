@@ -34,8 +34,18 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 FROM_EMAIL = os.getenv("FROM_EMAIL")
 
+# Check each SMTP variable individually
+if not SMTP_SERVER:
+    logger.warning("SMTP_SERVER not configured. Email functionality will be disabled.")
+if not SMTP_USERNAME:
+    logger.warning("SMTP_USERNAME not configured. Email functionality will be disabled.")
+if not SMTP_PASSWORD:
+    logger.warning("SMTP_PASSWORD not configured. Email functionality will be disabled.")
+if not FROM_EMAIL:
+    logger.warning("FROM_EMAIL not configured. Email functionality will be disabled.")
+
 if not all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD, FROM_EMAIL]):
-    logger.warning("Email configuration missing. Email functionality will be disabled.")
+    logger.warning("Some email configuration variables are missing. Email functionality will be disabled.")
 
 # Initialize Stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
