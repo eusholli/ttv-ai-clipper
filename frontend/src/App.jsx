@@ -30,11 +30,38 @@ const EmailIcon = () => (
 
 // Unselect All Button Component
 const UnselectAllButton = ({ selectedClips, setSelectedClips }) => {
+  const { isSignedIn, getToken } = useAuth();
+  const { user } = useUser();
+  const [hasActiveSubscription, setHasActiveSubscription] = useState(false);
+
+  useEffect(() => {
+    const checkSubscription = async () => {
+      if (!isSignedIn || !user?.unsafeMetadata?.stripeCustomerId) {
+        setHasActiveSubscription(false);
+        return;
+      }
+
+      try {
+        const token = await getToken();
+        const response = await axios.get(
+          `${BACKEND_URL}/api/subscription-status?customer_id=${user.unsafeMetadata.stripeCustomerId}`,
+          { headers: { Authorization: `Bearer ${token}` }}
+        );
+        setHasActiveSubscription(response.data.status === 'active');
+      } catch (err) {
+        console.error('Error checking subscription:', err);
+        setHasActiveSubscription(false);
+      }
+    };
+
+    checkSubscription();
+  }, [isSignedIn, user]);
+
   return (
     <button 
-      className={`unselect-all-button ${selectedClips.length === 0 ? 'inactive' : ''}`}
+      className={`unselect-all-button ${selectedClips.length === 0 || !hasActiveSubscription ? 'inactive' : ''}`}
       onClick={() => setSelectedClips([])}
-      disabled={selectedClips.length === 0}
+      disabled={selectedClips.length === 0 || !hasActiveSubscription}
     >
       Unselect all
     </button>
@@ -306,6 +333,7 @@ const MainContent = () => {
   const [emailing, setEmailing] = useState({})
   const filtersRef = useRef(null)
   const { isSignedIn } = useAuth();
+  const { user } = useUser();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -709,7 +737,7 @@ const MainContent = () => {
                       <div className="result-header">
                         <input
                           type="checkbox"
-                          className="clip-checkbox"
+                          className={`clip-checkbox ${!isSignedIn || !user?.unsafeMetadata?.stripeCustomerId ? 'inactive' : ''}`}
                           checked={selectedClips.includes(result.segment_hash)}
                           onChange={(e) => {
                             if (e.target.checked) {
@@ -718,6 +746,7 @@ const MainContent = () => {
                               setSelectedClips(selectedClips.filter(hash => hash !== result.segment_hash));
                             }
                           }}
+                          disabled={!isSignedIn || !user?.unsafeMetadata?.stripeCustomerId}
                         />
                         <h2 className="result-title">{result.title}</h2>
                       </div>
