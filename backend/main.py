@@ -524,6 +524,8 @@ async def email_clip(
         Speaker: {clip.get('speaker', 'Unknown')}
         Company: {clip.get('company', 'Unknown')}
         Time: {start_time} - {end_time}
+        Quote: {clip.get('text', 'No Transcript Available')}
+
         
         Download Link: {url}
         
