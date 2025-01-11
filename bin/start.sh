@@ -30,8 +30,30 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 # Start FastAPI
 echo "Starting FastAPI..."
 . /app/venv/bin/activate
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4 --log-level info \
-    --log-config /app/logging.conf &
+
+APP_MODULE="backend.main:app"
+HOST="0.0.0.0"
+PORT="8000"
+
+# Check if debug mode is enabled
+if [ "$DEBUGPY_ENABLE" = "1" ]; then
+    echo "Starting in debug mode with debugpy..."
+    python -m debugpy \
+        --listen $HOST:5678 \
+        --wait-for-client \
+        -m uvicorn $APP_MODULE \
+        --host $HOST \
+        --port $PORT \
+        --workers 1 \
+        --log-level debug &
+else
+    echo "Starting in production mode..."
+    uvicorn $APP_MODULE \
+        --host $HOST \
+        --port $PORT \
+        --workers 4 \
+        --log-level info &
+fi
 FASTAPI_PID=$!
 
 # Wait for FastAPI to start

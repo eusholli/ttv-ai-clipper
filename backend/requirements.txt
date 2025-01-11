@@ -19,3 +19,4 @@ cloud-sql-python-connector[pg8000]
 debugpy
 PyJWT
 cryptography
+debugpy
