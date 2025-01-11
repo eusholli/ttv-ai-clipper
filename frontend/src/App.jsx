@@ -178,8 +178,8 @@ const EmailButton = ({ result, emailing, setEmailing }) => {
       setEmailing({ ...emailing, [result.segment_hash]: true });
       
       const emailResponse = await axios.post(
-        `${BACKEND_URL}/api/email-clip/${result.segment_hash}`,
-        {},
+        `${BACKEND_URL}/api/email-clips`,
+        { segment_hashes: [result.segment_hash] },
         { headers: { Authorization: `Bearer ${token}` }}
       );
 
