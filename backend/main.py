@@ -459,6 +459,7 @@ Clip: {clip.get('title', 'Untitled')}
 Speaker: {clip.get('speaker', 'Unknown')}
 Company: {clip.get('company', 'Unknown')}
 Time: {start_time} - {end_time}
+Quote: {clip.get('text', 'No Transcript Available')}
 Download Link: {url}
 
 """
