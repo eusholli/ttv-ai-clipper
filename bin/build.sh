@@ -8,7 +8,7 @@ VERSION="0.0.8"
 # Build the Docker image
 docker build \
   --build-arg BUILD_VERSION="${VERSION}" \
-  --build-arg ENV_FILE=.env.macbook \
+  --build-arg FRONTEND_ENV_FILE=.env.macbook \
   -t ttv-ai-clipper:"${VERSION}" \
   -t ttv-ai-clipper:latest \
   .

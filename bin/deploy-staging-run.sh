@@ -9,7 +9,7 @@ set -x
 # Version and project configuration
 VERSION="0.0.1"  # Update this version as needed
 STAGING_PROJECT_ID="staging-ai-clipper"
-IMAGE_NAME="ttv-ai-clipper"
+IMAGE_NAME="staging-ai-clipper"
 REGION="us-central1"
 
 echo "Starting staging deployment for version ${VERSION}"
@@ -18,6 +18,7 @@ echo "Starting staging deployment for version ${VERSION}"
 echo "Building container image..."
 docker build \
   --platform linux/amd64 \
+  --build-arg FRONTEND_ENV_FILE=.env.staging \
   -t "gcr.io/${STAGING_PROJECT_ID}/${IMAGE_NAME}:${VERSION}" \
   -t "gcr.io/${STAGING_PROJECT_ID}/${IMAGE_NAME}:latest" \
   .
