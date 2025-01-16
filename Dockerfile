@@ -2,11 +2,11 @@
 FROM node:20-slim AS frontend-build
 
 # Add build argument for environment file with production as default
-ARG ENV_FILE=.env.production
+ARG FRONTEND_ENV_FILE=.env.production
 
 WORKDIR /frontend
 COPY frontend/ .
-COPY frontend/${ENV_FILE} .env.production
+COPY frontend/${FRONTEND_ENV_FILE} .env.production
 RUN npm install
 RUN npm run build
 

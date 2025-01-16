@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 import json
 
-def read_env_file(env_path='.env.local'):
+def read_BACKEND_env_file(env_path='.env.local'):
     """Read key-value pairs from .env file."""
     env_vars = {}
     if not Path(env_path).exists():
@@ -54,11 +54,11 @@ def main():
     IMAGE_NAME = "ttv-ai-clipper"
     DEBUG_MODE = True  # Set to True to enable debugging
     PORT_MAPPING = "-p 80:80 -p 5678:5678" if DEBUG_MODE else "-p 80:80"  # Add debug port when in debug mode
-    ENV_FILE = '.env.local'
+    BACKEND_ENV_FILE = 'backend/.env.local'
     
     try:
         # Read environment variables
-        env_vars = read_env_file(ENV_FILE)
+        env_vars = read_BACKEND_env_file(BACKEND_ENV_FILE)
         
         # Build the docker command
         docker_cmd = build_docker_command(IMAGE_NAME, env_vars, PORT_MAPPING, DEBUG_MODE)
