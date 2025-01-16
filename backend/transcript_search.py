@@ -120,12 +120,6 @@ class TranscriptSearch:
             )
         self.cursor = self.conn.cursor()
         
-        # Enable required extensions
-        self.cursor.execute('CREATE EXTENSION IF NOT EXISTS vector;')
-        self.cursor.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm;')
-        self.conn.commit()
-        self.create_schema()
-        
         # Initialize filter values
         self._filter_values = self._fetch_filter_values()
         # Initialize models as None for lazy loading
@@ -196,53 +190,6 @@ class TranscriptSearch:
             if isinstance(embedding, list):
                 return embedding
             return embedding.tolist()
-
-    def create_schema(self):
-        """Create the database schema with proper indexes"""
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS transcripts (
-                segment_hash TEXT PRIMARY KEY,
-                title TEXT,
-                date TIMESTAMP,
-                youtube_id TEXT,
-                source TEXT,
-                speaker TEXT,
-                company TEXT,
-                start_time INTEGER,
-                end_time INTEGER,
-                duration INTEGER,
-                subjects TEXT[],
-                download TEXT,
-                text TEXT,
-                text_vector vector(384),  -- for semantic search
-                search_vector tsvector     -- for full-text search
-            );
-            
-            -- Create GiST index for trigram similarity on speaker and company
-            CREATE INDEX IF NOT EXISTS idx_speaker_trgm 
-            ON transcripts USING gist (speaker gist_trgm_ops);
-            
-            CREATE INDEX IF NOT EXISTS idx_company_trgm 
-            ON transcripts USING gist (company gist_trgm_ops);
-            
-            -- Create B-tree index for date range queries
-            CREATE INDEX IF NOT EXISTS idx_date 
-            ON transcripts (date);
-            
-            -- Create GIN index for full-text search
-            CREATE INDEX IF NOT EXISTS idx_search_vector 
-            ON transcripts USING gin(search_vector);
-            
-            -- Create IVF index for vector similarity search
-            CREATE INDEX IF NOT EXISTS idx_text_vector 
-            ON transcripts USING ivfflat (text_vector vector_cosine_ops)
-            WITH (lists = 100);
-            
-            -- Create index on youtube_id for efficient lookups
-            CREATE INDEX IF NOT EXISTS idx_youtube_id
-            ON transcripts (youtube_id);
-        ''')
-        self.conn.commit()
 
     def add_transcript(self, 
                       segment_hash: str,
@@ -598,9 +545,6 @@ class TranscriptSearch:
 def main():
     # Initialize search
     search = TranscriptSearch()
-    
-    # Create schema
-    search.create_schema()
     
     # Add some sample data
     sample_transcripts = [
