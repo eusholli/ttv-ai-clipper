@@ -21,6 +21,197 @@ const DownloadIcon = () => (
   </svg>
 )
 
+// Email icon component
+const EmailIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+    <polyline points="22,6 12,13 2,6"/>
+  </svg>
+)
+
+// Unselect All Button Component
+const UnselectAllButton = ({ selectedClips, setSelectedClips }) => {
+  const { isSignedIn, getToken } = useAuth();
+  const { user } = useUser();
+  const [hasActiveSubscription, setHasActiveSubscription] = useState(false);
+
+  useEffect(() => {
+    const checkSubscription = async () => {
+      if (!isSignedIn || !user?.unsafeMetadata?.stripeCustomerId) {
+        setHasActiveSubscription(false);
+        return;
+      }
+
+      try {
+        const token = await getToken();
+        const response = await axios.get(
+          `${BACKEND_URL}/api/subscription-status?customer_id=${user.unsafeMetadata.stripeCustomerId}`,
+          { headers: { Authorization: `Bearer ${token}` }}
+        );
+        setHasActiveSubscription(response.data.status === 'active');
+      } catch (err) {
+        console.error('Error checking subscription:', err);
+        setHasActiveSubscription(false);
+      }
+    };
+
+    checkSubscription();
+  }, [isSignedIn, user]);
+
+  return (
+    <button 
+      className={`unselect-all-button ${selectedClips.length === 0 || !hasActiveSubscription ? 'inactive' : ''}`}
+      onClick={() => setSelectedClips([])}
+      disabled={selectedClips.length === 0 || !hasActiveSubscription}
+    >
+      Unselect all
+    </button>
+  );
+};
+
+// Email All Button Component
+const EmailAllButton = ({ selectedClips }) => {
+  const { isSignedIn, getToken } = useAuth();
+  const { user } = useUser();
+  const navigate = useNavigate();
+  const [sending, setSending] = useState(false);
+
+  const handleEmailAll = async () => {
+    if (!isSignedIn) {
+      sessionStorage.setItem('searchState', JSON.stringify({
+        searchQuery: window.searchQuery,
+        selectedFilters: window.selectedFilters,
+        numResults: window.numResults
+      }));
+      sessionStorage.setItem('fromAuth', 'true');
+      navigate('/sign-in');
+      return;
+    }
+
+    try {
+      const token = await getToken();
+      const stripeCustomerId = user?.unsafeMetadata?.stripeCustomerId;
+      
+      if (!stripeCustomerId) {
+        navigate('/user-profile');
+        return;
+      }
+
+      const response = await axios.get(`${BACKEND_URL}/api/subscription-status?customer_id=${stripeCustomerId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.data.status !== 'active') {
+        navigate('/user-profile');
+        return;
+      }
+
+      setSending(true);
+      
+      const emailResponse = await axios.post(
+        `${BACKEND_URL}/api/email-clips`,
+        { segment_hashes: selectedClips },
+        { headers: { Authorization: `Bearer ${token}` }}
+      );
+      if (emailResponse.data.status === 'success') {
+        alert('Email sent successfully!');
+      }
+    } catch (err) {
+      console.error('Error emailing clips:', err);
+      if (err.response?.status === 403) {
+        navigate('/pricing');
+      } else {
+        alert(`Failed to email clips:\n${err.message}`);
+      }
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <button 
+      className={`email-all-button ${selectedClips.length === 0 ? 'inactive' : ''}`}
+      onClick={handleEmailAll}
+      disabled={sending || selectedClips.length === 0}
+    >
+      {sending ? 'Sending...' : `Email ${selectedClips.length} selected clip${selectedClips.length !== 1 ? 's' : ''}`}
+    </button>
+  );
+};
+
+// Email Button Component
+const EmailButton = ({ result, emailing, setEmailing }) => {
+  const { isSignedIn, getToken } = useAuth();
+  const { user } = useUser();
+  const navigate = useNavigate();
+
+  const handleEmail = async () => {
+    if (!isSignedIn) {
+      sessionStorage.setItem('searchState', JSON.stringify({
+        searchQuery: window.searchQuery,
+        selectedFilters: window.selectedFilters,
+        numResults: window.numResults
+      }));
+      sessionStorage.setItem('fromAuth', 'true');
+      navigate('/sign-in');
+      return;
+    }
+
+    try {
+      // Check subscription status first
+      const token = await getToken();
+      const stripeCustomerId = user?.unsafeMetadata?.stripeCustomerId;
+      
+      if (!stripeCustomerId) {
+        navigate('/user-profile');
+        return;
+      }
+
+      const response = await axios.get(`${BACKEND_URL}/api/subscription-status?customer_id=${stripeCustomerId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.data.status !== 'active') {
+        navigate('/user-profile');
+        return;
+      }
+
+      setEmailing({ ...emailing, [result.segment_hash]: true });
+      
+      const emailResponse = await axios.post(
+        `${BACKEND_URL}/api/email-clips`,
+        { segment_hashes: [result.segment_hash] },
+        { headers: { Authorization: `Bearer ${token}` }}
+      );
+
+      if (emailResponse.data.status === 'success') {
+        alert('Email sent successfully!');
+      }
+    } catch (err) {
+      console.error('Error emailing clip:', err);
+      if (err.response?.status === 403) {
+        navigate('/pricing');
+      } else {
+        alert(`Failed to email clip:\n${err.message}`);
+      }
+    } finally {
+      setEmailing({ ...emailing, [result.segment_hash]: false });
+    }
+  };
+
+  return (
+    <button
+      className="email-button"
+      onClick={handleEmail}
+      disabled={emailing[result.segment_hash]}
+    >
+      <EmailIcon />
+      {emailing[result.segment_hash] ? 'Sending...' : 
+       !isSignedIn ? 'Subscribe to Email' : 'Email clip to me'}
+    </button>
+  );
+};
+
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
   return (
@@ -115,6 +306,7 @@ const MainContent = () => {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [isLoading, setIsLoading] = useState(false)
+  const [selectedClips, setSelectedClips] = useState([])
   const [filters, setFilters] = useState({
     speakers: [],
     dates: [],
@@ -139,8 +331,10 @@ const MainContent = () => {
     selected_subject: ''
   })
   const [downloading, setDownloading] = useState({})
+  const [emailing, setEmailing] = useState({})
   const filtersRef = useRef(null)
   const { isSignedIn } = useAuth();
+  const { user } = useUser();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -249,6 +443,7 @@ const MainContent = () => {
   const handleSearch = async () => {
     try {
       setIsLoading(true);
+      setSelectedClips([]); // Reset selected clips when performing new search
       const validatedResults = validateNumResults(numResults);
       if (validatedResults !== numResults) {
         setNumResults(validatedResults);
@@ -523,6 +718,15 @@ const MainContent = () => {
           {/* Search Results */}
           {searchResults.length > 0 && (
             <div className="search-results">
+              <div className="email-all-container">
+                <UnselectAllButton 
+                  selectedClips={selectedClips}
+                  setSelectedClips={setSelectedClips}
+                />
+                <EmailAllButton 
+                  selectedClips={selectedClips}
+                />
+              </div>
               {searchResults.map((result, index) => {
                 const startParam = result.start_time === 0 ? "0" : result.start_time - 1;
                 const endParam = result.end_time === 0 ? "" : `&end=${result.end_time + 1}`;
@@ -531,7 +735,22 @@ const MainContent = () => {
                 return (
                   <article key={index} className="result-item">
                     <div className="result-content">
-                      <h2 className="result-title">{result.title}</h2>
+                      <div className="result-header">
+                        <input
+                          type="checkbox"
+                          className={`clip-checkbox ${!isSignedIn || !user?.unsafeMetadata?.stripeCustomerId ? 'inactive' : ''}`}
+                          checked={selectedClips.includes(result.segment_hash)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedClips([...selectedClips, result.segment_hash]);
+                            } else {
+                              setSelectedClips(selectedClips.filter(hash => hash !== result.segment_hash));
+                            }
+                          }}
+                          disabled={!isSignedIn || !user?.unsafeMetadata?.stripeCustomerId}
+                        />
+                        <h2 className="result-title">{result.title}</h2>
+                      </div>
                       <div className="result-meta">
                         {result.speaker} · {result.company}
                       </div>
@@ -555,11 +774,18 @@ const MainContent = () => {
                         allowFullScreen
                       />
                       {result.download && (
-                        <DownloadButton 
-                          result={result}
-                          downloading={downloading}
-                          setDownloading={setDownloading}
-                        />
+                        <>
+                          <DownloadButton 
+                            result={result}
+                            downloading={downloading}
+                            setDownloading={setDownloading}
+                          />
+                          <EmailButton
+                            result={result}
+                            emailing={emailing}
+                            setEmailing={setEmailing}
+                          />
+                        </>
                       )}
                     </div>
                   </article>

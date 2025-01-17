@@ -1,22 +1,24 @@
 # Build frontend
 FROM node:20-slim AS frontend-build
+
+# Add build argument for environment file with production as default
+ARG FRONTEND_ENV_FILE=.env.production
+
 WORKDIR /frontend
-COPY frontend/package*.json ./
-RUN npm install
-COPY frontend/.env.production .env
 COPY frontend/ .
+COPY frontend/${FRONTEND_ENV_FILE} .env.production
+RUN npm install
 RUN npm run build
 
 # Final stage
 FROM python:3.11-slim
 
 # Build-time arguments for versioning
-ARG BUILD_VERSION="0.0.6"
-ARG BUILD_DATE="2025-01-02T17:41:47Z"
+ARG BUILD_VERSION="UNKNOWN"
 
 # Add labels with version info
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
-      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.created="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
       org.opencontainers.image.title="TTV AI Clipper" \
       org.opencontainers.image.description="Frontend + Backend Application" \
       org.opencontainers.image.vendor="Hollingworth LLC"

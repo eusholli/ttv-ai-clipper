@@ -16,4 +16,7 @@ moviepy
 sqlalchemy
 pg8000
 cloud-sql-python-connector[pg8000]
+PyJWT
+cryptography
+debugpy
 pydantic[email]
