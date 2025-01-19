@@ -1,5 +1,10 @@
 import psycopg2
 from psycopg2.extras import execute_values
+from psycopg2 import pool
+from contextlib import contextmanager
+from functools import wraps
+import time
+import logging
 from sentence_transformers import SentenceTransformer
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
@@ -83,9 +88,41 @@ def extract_subject_info(text: str, nlp) -> List[str]:
             
     return matched_subjects
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Maximum number of retries for database operations
+MAX_RETRIES = 3
+RETRY_DELAY = 1  # seconds
+
+def with_retry(func):
+    """Decorator to retry database operations with exponential backoff"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        last_error = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                return func(*args, **kwargs)
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                last_error = e
+                if attempt < MAX_RETRIES - 1:
+                    delay = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
+                    logger.warning(f"Database operation failed, retrying in {delay}s: {str(e)}")
+                    time.sleep(delay)
+                    continue
+        raise last_error
+    return wrapper
+
 class TranscriptSearch:
-    def __init__(self):
-        """Initialize database connection and required extensions"""
+    _pool = None
+    
+    @classmethod
+    def initialize_pool(cls):
+        """Initialize the connection pool if it hasn't been created yet"""
+        if cls._pool is not None:
+            return
+            
         load_dotenv()
         
         # Check for required environment variables
@@ -96,35 +133,62 @@ class TranscriptSearch:
             
         # Check if running in Cloud Run (INSTANCE_CONNECTION_NAME will be set)
         instance_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
+        
         if instance_connection_name:
             # Use Unix domain socket for Cloud SQL
             db_socket_dir = '/cloudsql'
             cloud_sql_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
-            
-            self.conn = psycopg2.connect(
-                dbname=os.getenv('DB_NAME'),
-                user=os.getenv('DB_USER'),
-                password=os.getenv('DB_PWD'),
-                host=f'{db_socket_dir}/{cloud_sql_connection_name}',
-                connect_timeout=30
-            )
+            connection_args = {
+                'dbname': os.getenv('DB_NAME'),
+                'user': os.getenv('DB_USER'),
+                'password': os.getenv('DB_PWD'),
+                'host': f'{db_socket_dir}/{cloud_sql_connection_name}',
+                'connect_timeout': 30
+            }
         else:
             # Use regular connection for local development
-            self.conn = psycopg2.connect(
-                dbname=os.getenv('DB_NAME'),
-                user=os.getenv('DB_USER'),
-                password=os.getenv('DB_PWD'),
-                host=os.getenv('DB_HOST'),
-                sslmode='require',  # Required for Neon database connections
-                connect_timeout=30  # Set connection timeout to 30 seconds
+            connection_args = {
+                'dbname': os.getenv('DB_NAME'),
+                'user': os.getenv('DB_USER'),
+                'password': os.getenv('DB_PWD'),
+                'host': os.getenv('DB_HOST'),
+                'sslmode': 'require',  # Required for Neon database connections
+                'connect_timeout': 30  # Set connection timeout to 30 seconds
+            }
+            
+        try:
+            cls._pool = pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=20,  # Adjust based on your application's needs
+                **connection_args
             )
-        self.cursor = self.conn.cursor()
+            logger.info("Database connection pool initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize connection pool: {str(e)}")
+            raise
+
+    def __init__(self):
+        """Initialize required extensions"""
+        # Ensure pool is initialized
+        self.initialize_pool()
         
-        # Initialize filter values
-        self._filter_values = self._fetch_filter_values()
         # Initialize models as None for lazy loading
         self._nlp = None
         self._model = None
+        
+    @contextmanager
+    def get_db_connection(self):
+        """Context manager for getting a connection from the pool"""
+        conn = None
+        try:
+            conn = self._pool.getconn()
+            yield conn
+        except Exception as e:
+            logger.error(f"Database connection error: {str(e)}")
+            raise
+        finally:
+            if conn is not None:
+                self._pool.putconn(conn)
  
     @staticmethod
     def _create_quantized_transformer():
@@ -191,6 +255,7 @@ class TranscriptSearch:
                 return embedding
             return embedding.tolist()
 
+    @with_retry
     def add_transcript(self, 
                       segment_hash: str,
                       text: str,
@@ -208,42 +273,41 @@ class TranscriptSearch:
         """
         Add a single transcript entry with all its metadata
         """
-        # Generate embedding
-        # model = SentenceTransformer('all-MiniLM-L6-v2')
         # Generate embedding using quantized model
         embedding = self.encode_text(text)
 
-        try:
-            self.cursor.execute('''
-                INSERT INTO transcripts (
-                    segment_hash, title, date, youtube_id, source, speaker, company,
-                    start_time, end_time, duration, subjects, download, text,
-                    text_vector, search_vector
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    to_tsvector('english', COALESCE(%s, '') || ' ' || 
-                                         COALESCE(%s, '') || ' ' || 
-                                         COALESCE(%s, '') || ' ' ||
-                                         COALESCE(%s, ''))
-                )
-            ''', (
-                segment_hash, title, date, youtube_id, source, speaker, company,
-                start_time, end_time, duration, subjects, download, text,
-                embedding,
-                title, speaker, company, text
-            ))
-            self.conn.commit()
-        except Exception as e:
-            self.conn.rollback()
-            raise e
+        with self.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute('''
+                        INSERT INTO transcripts (
+                            segment_hash, title, date, youtube_id, source, speaker, company,
+                            start_time, end_time, duration, subjects, download, text,
+                            text_vector, search_vector
+                        )
+                        VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            to_tsvector('english', COALESCE(%s, '') || ' ' || 
+                                                 COALESCE(%s, '') || ' ' || 
+                                                 COALESCE(%s, '') || ' ' ||
+                                                 COALESCE(%s, ''))
+                        )
+                    ''', (
+                        segment_hash, title, date, youtube_id, source, speaker, company,
+                        start_time, end_time, duration, subjects, download, text,
+                        embedding,
+                        title, speaker, company, text
+                    ))
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    raise e
 
+    @with_retry
     def add_transcripts_batch(self, transcripts: List[Dict[str, Any]]) -> None:
         """
         Batch insert multiple transcripts
         """
-        # model = SentenceTransformer('all-MiniLM-L6-v2')
-        
         # Generate embeddings for all texts
         texts = [t['text'] for t in transcripts]
         embeddings = self.encode_text(texts)
@@ -270,21 +334,28 @@ class TranscriptSearch:
                 f"{transcript['title']} {transcript['speaker']} {transcript.get('company', '')} {transcript['text']}"
             ))
         
-        execute_values(
-            self.cursor,
-            '''
-            INSERT INTO transcripts (
-                segment_hash, title, date, youtube_id, source, speaker, company,
-                start_time, end_time, duration, subjects, download, text,
-                text_vector, search_vector
-            )
-            VALUES %s
-            ''',
-            data,
-            template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('english', %s))'''
-        )
-        self.conn.commit()
+        with self.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                try:
+                    execute_values(
+                        cur,
+                        '''
+                        INSERT INTO transcripts (
+                            segment_hash, title, date, youtube_id, source, speaker, company,
+                            start_time, end_time, duration, subjects, download, text,
+                            text_vector, search_vector
+                        )
+                        VALUES %s
+                        ''',
+                        data,
+                        template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('english', %s))'''
+                    )
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    raise e
 
+    @with_retry
     def hybrid_search(self,
                      search_text: str,
                      filters: Optional[Dict] = None,
@@ -420,8 +491,10 @@ class TranscriptSearch:
         params.append(limit)
         
         # Execute search
-        self.cursor.execute(query, params)
-        results = self.cursor.fetchall()
+        with self.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                results = cur.fetchall()
         
         # Format results
         formatted_results = []
@@ -445,34 +518,34 @@ class TranscriptSearch:
         
         return formatted_results
 
-    def _fetch_filter_values(self) -> Dict[str, List[str]]:
+    def _fetch_filter_values(self, cursor) -> Dict[str, List[str]]:
         """
         Fetch and store unique values for each filterable field from the database
         Returns a dictionary with lists of unique speakers, dates, titles, and companies
         """
         # Get unique speakers
-        self.cursor.execute('SELECT DISTINCT speaker FROM transcripts ORDER BY speaker')
-        speakers = [row[0] for row in self.cursor.fetchall()]
+        cursor.execute('SELECT DISTINCT speaker FROM transcripts ORDER BY speaker')
+        speakers = [row[0] for row in cursor.fetchall()]
 
         # Get unique dates and format them
-        self.cursor.execute('''
+        cursor.execute('''
             SELECT DISTINCT date::date 
             FROM transcripts 
             ORDER BY date DESC
         ''')
-        dates = [row[0].strftime("%b %d, %Y") for row in self.cursor.fetchall()]
+        dates = [row[0].strftime("%b %d, %Y") for row in cursor.fetchall()]
 
         # Get unique titles
-        self.cursor.execute('SELECT DISTINCT title FROM transcripts ORDER BY title')
-        titles = [row[0] for row in self.cursor.fetchall()]
+        cursor.execute('SELECT DISTINCT title FROM transcripts ORDER BY title')
+        titles = [row[0] for row in cursor.fetchall()]
 
         # Get unique companies
-        self.cursor.execute('SELECT DISTINCT company FROM transcripts ORDER BY company')
-        companies = [row[0] for row in self.cursor.fetchall() if row[0] is not None]
+        cursor.execute('SELECT DISTINCT company FROM transcripts ORDER BY company')
+        companies = [row[0] for row in cursor.fetchall() if row[0] is not None]
 
         # Get unique subjects and create a dictionary mapping display names to values
-        self.cursor.execute('SELECT DISTINCT unnest(subjects) FROM transcripts ORDER BY 1')
-        db_subjects = [row[0] for row in self.cursor.fetchall() if row[0] is not None]
+        cursor.execute('SELECT DISTINCT unnest(subjects) FROM transcripts ORDER BY 1')
+        db_subjects = [row[0] for row in cursor.fetchall() if row[0] is not None]
         
         # Create a dictionary mapping display names to values for subjects found in the database
         # Find display string by matching value in ALL_SUBJECTS
@@ -491,6 +564,7 @@ class TranscriptSearch:
             "subjects": subjects
         }
 
+    @with_retry
     def get_metadata_by_hash(self, segment_hash: str) -> Optional[Dict]:
         """
         Get metadata for a specific segment by its hash
@@ -501,15 +575,17 @@ class TranscriptSearch:
         Returns:
             Dictionary containing segment metadata or None if not found
         """
-        self.cursor.execute('''
-            SELECT 
-                segment_hash, title, date, youtube_id, source, speaker, company,
-                start_time, end_time, duration, subjects, download, text
-            FROM transcripts 
-            WHERE segment_hash = %s
-        ''', (segment_hash,))
-        
-        result = self.cursor.fetchone()
+        with self.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('''
+                    SELECT 
+                        segment_hash, title, date, youtube_id, source, speaker, company,
+                        start_time, end_time, duration, subjects, download, text
+                    FROM transcripts 
+                    WHERE segment_hash = %s
+                ''', (segment_hash,))
+                
+                result = cur.fetchone()
         
         if result:
             return {
@@ -533,82 +609,96 @@ class TranscriptSearch:
         """
         Returns the stored filter values
         """
+        # Initialize filter values
+        with self.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                self._filter_values = self._fetch_filter_values(cur)
+                
         return self._filter_values
 
-    def close(self):
-        """Close database connection"""
-        self.cursor.close()
-        self.conn.close()
+    @classmethod
+    def close_pool(cls):
+        """Close the connection pool"""
+        if cls._pool is not None:
+            cls._pool.closeall()
+            cls._pool = None
+            logger.info("Database connection pool closed")
 
 
 # Example usage
 def main():
-    # Initialize search
-    search = TranscriptSearch()
-    
-    # Add some sample data
-    sample_transcripts = [
-        {
-            'segment_hash': 'abc123',
-            'title': 'Tech Talk Q1 2024',
-            'date': datetime(2024, 1, 15),
-            'youtube_id': 'yt123',
-            'source': 'youtube',
-            'speaker': 'John Smith',
-            'company': 'Tech Corp',
-            'start_time': 120,
-            'end_time': 180,
-            'duration': 60,
-            'subjects': ['cloud', 'growth', 'technology'],
-            'download': 'https://example.com/video1',
-            'text': 'We are seeing strong growth in cloud services across all regions.'
-        },
-        {
-            'segment_hash': 'def456',
-            'title': 'AI Summit 2024',
-            'date': datetime(2024, 1, 20),
-            'youtube_id': 'yt456',
-            'source': 'youtube',
-            'speaker': 'Jane Doe',
-            'company': 'Data Inc',
-            'start_time': 45,
-            'end_time': 90,
-            'duration': 45,
-            'subjects': ['AI', 'machine learning', 'innovation'],
-            'download': 'https://example.com/video2',
-            'text': 'Our AI initiatives are showing promising results in natural language processing.'
-        }
-    ]
-    
-    search.add_transcripts_batch(sample_transcripts)
-    
-    # Perform hybrid search with filters
-    results = search.hybrid_search(
-        search_text='cloud computing growth',
-        filters={
-            'date_range': (datetime(2024, 1, 1), datetime(2024, 12, 31)),
-            'companies': ['Tech Corp', 'Data Inc'],
-            'speakers': ['John Smith', 'Jane Doe'],
-            'subjects': ['cloud', 'AI'],
-            'source': 'youtube',
-            'min_duration': 30,
-            'title': 'Tech'  # Will match 'Tech Talk Q1 2024'
-        },
-        semantic_weight=0.7
-    )
-    
-    # Print results
-    for result in results:
-        print(f"\nTitle: {result['title']}")
-        print(f"Speaker: {result['speaker']} ({result['company']})")
-        print(f"Date: {result['date']}")
-        print(f"Source: {result['source']} (ID: {result['youtube_id']})")
-        print(f"Duration: {result['duration']}s ({result['start_time']}s - {result['end_time']}s)")
-        print(f"Subjects: {', '.join(result['subjects'])}")
-        print(f"Text: {result['text']}")
-        print(f"Similarity: {result['similarity']:.3f}")
-    
-    search.close()
+    try:
+        # Initialize search
+        search = TranscriptSearch()
+        
+        # Add some sample data
+        sample_transcripts = [
+            {
+                'segment_hash': 'abc123',
+                'title': 'Tech Talk Q1 2024',
+                'date': datetime(2024, 1, 15),
+                'youtube_id': 'yt123',
+                'source': 'youtube',
+                'speaker': 'John Smith',
+                'company': 'Tech Corp',
+                'start_time': 120,
+                'end_time': 180,
+                'duration': 60,
+                'subjects': ['cloud', 'growth', 'technology'],
+                'download': 'https://example.com/video1',
+                'text': 'We are seeing strong growth in cloud services across all regions.'
+            },
+            {
+                'segment_hash': 'def456',
+                'title': 'AI Summit 2024',
+                'date': datetime(2024, 1, 20),
+                'youtube_id': 'yt456',
+                'source': 'youtube',
+                'speaker': 'Jane Doe',
+                'company': 'Data Inc',
+                'start_time': 45,
+                'end_time': 90,
+                'duration': 45,
+                'subjects': ['AI', 'machine learning', 'innovation'],
+                'download': 'https://example.com/video2',
+                'text': 'Our AI initiatives are showing promising results in natural language processing.'
+            }
+        ]
+        
+        search.add_transcripts_batch(sample_transcripts)
+        
+        # Perform hybrid search with filters
+        results = search.hybrid_search(
+            search_text='cloud computing growth',
+            filters={
+                'date_range': (datetime(2024, 1, 1), datetime(2024, 12, 31)),
+                'companies': ['Tech Corp', 'Data Inc'],
+                'speakers': ['John Smith', 'Jane Doe'],
+                'subjects': ['cloud', 'AI'],
+                'source': 'youtube',
+                'min_duration': 30,
+                'title': 'Tech'  # Will match 'Tech Talk Q1 2024'
+            },
+            semantic_weight=0.7
+        )
+        
+        # Print results
+        for result in results:
+            print(f"\nTitle: {result['title']}")
+            print(f"Speaker: {result['speaker']} ({result['company']})")
+            print(f"Date: {result['date']}")
+            print(f"Source: {result['source']} (ID: {result['youtube_id']})")
+            print(f"Duration: {result['duration']}s ({result['start_time']}s - {result['end_time']}s)")
+            print(f"Subjects: {', '.join(result['subjects'])}")
+            print(f"Text: {result['text']}")
+            print(f"Similarity: {result['similarity']:.3f}")
+            
+    except Exception as e:
+        logger.error(f"Error in main: {str(e)}")
+        raise
+    finally:
+        # Clean up connection pool
+        TranscriptSearch.close_pool()
 
 if __name__ == "__main__":
     main()

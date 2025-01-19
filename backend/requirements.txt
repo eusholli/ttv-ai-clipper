@@ -20,3 +20,4 @@ PyJWT
 cryptography
 debugpy
 pydantic[email]
+pysrt

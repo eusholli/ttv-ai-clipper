@@ -2,7 +2,6 @@ from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, EmailStr
 from pathlib import Path
-from backend.ingest_pg import CACHE_DIR
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -10,9 +9,9 @@ import os
 from dotenv import load_dotenv
 import logging
 from backend.transcript_search import TranscriptSearch
-from backend.ingest_pg import process_urls
 from backend.models import JobStatus, WorkflowState
 from backend.r2_manager import R2Manager
+from backend.ingest import ContentProcessor, CACHE_DIR, CLIP_DIR, process_urls
 
 logger = logging.getLogger(__name__)
 
@@ -44,39 +43,49 @@ class JobManager:
 
     def create_schema(self):
         """Create the jobs table schema"""
-        self.search.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ingest_jobs (
-                id SERIAL PRIMARY KEY,
-                url TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                started_at TIMESTAMP,
-                completed_at TIMESTAMP,
-                error_message TEXT,
-                user_email TEXT NOT NULL,
-                detailed_workflow_state TEXT
-            );
-            
-            -- Index for status queries
-            CREATE INDEX IF NOT EXISTS idx_jobs_status 
-            ON ingest_jobs (status);
-            
-            -- Index for user email queries
-            CREATE INDEX IF NOT EXISTS idx_jobs_user_email 
-            ON ingest_jobs (user_email);
-        ''')
-        self.search.conn.commit()
+        with self.search.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Create the jobs table
+                cur.execute('''
+                    CREATE TABLE IF NOT EXISTS ingest_jobs (
+                        id SERIAL PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        started_at TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        error_message TEXT,
+                        user_email TEXT NOT NULL,
+                        detailed_workflow_state TEXT,
+                        last_log_file TEXT
+                    )
+                ''')
+                
+                # Create indices
+                cur.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_jobs_status 
+                    ON ingest_jobs (status)
+                ''')
+                
+                cur.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_jobs_user_email 
+                    ON ingest_jobs (user_email)
+                ''')
+                
+                conn.commit()
 
     async def create_job(self, url: str, user_email: str) -> Job:
         """Create a new ingest job"""
-        self.search.cursor.execute('''
-            INSERT INTO ingest_jobs (url, status, user_email, detailed_workflow_state)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id, url, status, created_at, started_at, completed_at, error_message, user_email, detailed_workflow_state
-        ''', (url, JobStatus.PENDING, user_email, WorkflowState.PENDING))
-        
-        self.search.conn.commit()
-        row = self.search.cursor.fetchone()
+        with self.search.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('''
+                    INSERT INTO ingest_jobs (url, status, user_email, detailed_workflow_state)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id, url, status, created_at, started_at, completed_at, error_message, user_email, detailed_workflow_state
+                ''', (url, JobStatus.PENDING, user_email, WorkflowState.PENDING))
+                
+                conn.commit()
+                row = cur.fetchone()
         
         return Job(
             id=row[0],
@@ -92,13 +101,15 @@ class JobManager:
 
     def get_job(self, job_id: int) -> Optional[Job]:
         """Get job by ID"""
-        self.search.cursor.execute('''
-            SELECT id, url, status, created_at, started_at, completed_at, error_message, user_email, detailed_workflow_state
-            FROM ingest_jobs
-            WHERE id = %s
-        ''', (job_id,))
-        
-        row = self.search.cursor.fetchone()
+        with self.search.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('''
+                    SELECT id, url, status, created_at, started_at, completed_at, error_message, user_email, detailed_workflow_state
+                    FROM ingest_jobs
+                    WHERE id = %s
+                ''', (job_id,))
+                
+                row = cur.fetchone()
         if not row:
             return None
         
@@ -129,27 +140,27 @@ class JobManager:
         query += ' ORDER BY created_at DESC LIMIT %s'
         params.append(limit)
         
-        self.search.cursor.execute(query, params)
-        
-        return [
-            Job(
-                id=row[0],
-                url=row[1],
-                status=row[2],
-                created_at=row[3],
-                started_at=row[4],
-                completed_at=row[5],
-                error_message=row[6],
-                user_email=row[7],
-                detailed_workflow_state=row[8]
-            )
-            for row in self.search.cursor.fetchall()
-        ]
+        with self.search.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                
+                return [
+                    Job(
+                        id=row[0],
+                        url=row[1],
+                        status=row[2],
+                        created_at=row[3],
+                        started_at=row[4],
+                        completed_at=row[5],
+                        error_message=row[6],
+                        user_email=row[7],
+                        detailed_workflow_state=row[8]
+                    )
+                    for row in cur.fetchall()
+                ]
 
     async def process_job(self, job_id: int):
         """Process a job in the background"""
-        from backend.ingest_pg import ContentProcessor, CACHE_DIR, CLIP_DIR
-        
         job = self.get_job(job_id)
         if not job or job.status != JobStatus.PENDING:
             return
@@ -193,13 +204,15 @@ class JobManager:
         try:
             logger.info(f"Attempting to mark jobs as deleted for YouTube ID: {youtube_id}")
             # First get the job IDs
-            self.search.cursor.execute('''
-                SELECT id FROM ingest_jobs
-                WHERE url LIKE %s
-                AND status = %s
-            ''', (f'%{youtube_id}%', JobStatus.COMPLETED))
-            
-            job_ids = [row[0] for row in self.search.cursor.fetchall()]
+            with self.search.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute('''
+                        SELECT id FROM ingest_jobs
+                        WHERE url LIKE %s
+                        AND status = %s
+                    ''', (f'%{youtube_id}%', JobStatus.COMPLETED))
+                    
+                    job_ids = [row[0] for row in cur.fetchall()]
             
             if job_ids:
                 from backend.workflow_manager import WorkflowManager
@@ -216,17 +229,18 @@ class JobManager:
                 
         except Exception as e:
             logger.error(f"Error marking jobs as deleted: {str(e)}")
-            self.search.conn.rollback()
             raise
 
     def update_log_file(self, job_id: int, log_content: str):
         """Update the log file content for a job"""
-        self.search.cursor.execute('''
-            UPDATE ingest_jobs 
-            SET last_log_file = %s
-            WHERE id = %s
-        ''', (log_content, job_id))
-        self.search.conn.commit()
+        with self.search.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('''
+                    UPDATE ingest_jobs 
+                    SET last_log_file = %s
+                    WHERE id = %s
+                ''', (log_content, job_id))
+                conn.commit()
 
     def send_email(self, to_email: str, subject: str, body: str):
         """Send email notification"""

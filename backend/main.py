@@ -19,7 +19,10 @@ from backend.workflow_manager import WorkflowManager
 from backend.models import JobStatus, WorkflowState
 from typing import List, Optional, Dict, Any
 import logging
-
+import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
+ 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -78,10 +81,7 @@ async def verify_clerk_token(authorization: Optional[str] = Header(None)):
         
     try:
         # Verify token using Clerk's public key
-        import jwt
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.backends import default_backend
-        
+       
         try:
             # Format the key string with proper PEM structure
             key_lines = [
@@ -263,60 +263,6 @@ except Exception as e:
     logger.error(f"Failed to initialize R2Manager: {e}")
     # Continue without r2_manager functionality
     r2_manager = None
-
-async def verify_clerk_token(authorization: Optional[str] = Header(None)):
-    """Verify Clerk JWT token"""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization header")
-    
-    token = authorization.split(" ")[1]
-    
-    # Get Clerk public key from environment
-    clerk_jwt_key = os.getenv("CLERK_JWT_KEY")
-    if not clerk_jwt_key:
-        raise HTTPException(status_code=500, detail="Clerk JWT key not configured")
-        
-    try:
-        # Verify token using Clerk's public key
-        import jwt
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.backends import default_backend
-        
-        try:
-            # Format the key string with proper PEM structure
-            key_lines = [
-                "-----BEGIN PUBLIC KEY-----",
-                clerk_jwt_key.strip(),  # Remove any whitespace
-                "-----END PUBLIC KEY-----"
-            ]
-            formatted_key = "\n".join(key_lines)
-            
-            # Load the public key
-            public_key = serialization.load_pem_public_key(
-                formatted_key.encode(),
-                backend=default_backend()
-            )
-        except ValueError as e:
-            logger.error(f"Failed to load public key: {str(e)}")
-            raise HTTPException(status_code=500, detail="Invalid public key format")
-            
-        try:
-            # Verify and decode the token
-            decoded = jwt.decode(
-                token,
-                public_key,
-                algorithms=["RS256"]
-            )
-            return decoded
-
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token has expired")
-        except jwt.InvalidTokenError as e:
-            raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
-            
-    except Exception as e:
-        logger.error(f"Token verification error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Token verification failed")
             
 class SubscriptionRequest(BaseModel):
     priceId: str
