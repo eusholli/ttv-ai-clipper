@@ -17,6 +17,7 @@ from backend.transcript_search import TranscriptSearch
 from backend.job_manager import JobManager, Job
 from backend.workflow_manager import WorkflowManager
 from backend.models import JobStatus, WorkflowState
+from backend.ingest.new_transcript_parser import parse_raw_html, parse_transcript
 from typing import List, Optional, Dict, Any
 import logging
 import jwt
@@ -123,6 +124,9 @@ class CreateJobRequest(BaseModel):
     url: str
     user_email: EmailStr
 
+class ValidateRequest(BaseModel):
+    transcript: Dict[str, Any]
+
 # Job management endpoints
 @app.post("/api/admin/jobs", response_model=Job)
 async def create_job(
@@ -167,43 +171,40 @@ async def get_job_details(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-class MetadataUpdate(BaseModel):
-    title: Optional[str]
-    date: Optional[str]
-    youtube_id: Optional[str]
-    source: Optional[str]
+class TranscriptUpdate(BaseModel):
+    transcript: Dict[str, Any]
 
-@app.put("/api/admin/jobs/{job_id}/metadata")
-async def update_metadata(
+@app.post("/api/admin/jobs/{job_id}/validate")
+async def validate_content(
     job_id: int,
-    metadata: MetadataUpdate,
+    content: ValidateRequest,
     token: str = Depends(verify_clerk_token)
 ):
-    """Update job metadata"""
+    """Validate and parse transcript content"""
     try:
-        await workflow_manager.update_metadata(job_id, metadata.dict())
-        return {"status": "success"}
+        # Get metadata from the transcript
+        metadata = content.transcript.get('metadata', {})
+        title = metadata.get('title', '')
+        date = metadata.get('date', '')
+        youtube_id = metadata.get('youtube_id', '')
+        transcript_text = content.transcript.get('transcript', '')
+
+        # Parse the transcript using parse_raw_html
+        result = parse_transcript(title, date, youtube_id, transcript_text)
+        return result  # FastAPI will automatically convert dict to JSON response
     except Exception as e:
+        logger.error(f"Error validating content: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-class TranscriptSegment(BaseModel):
-    segment_hash: str
-    text: str
-    speaker: Optional[str]
-    company: Optional[str]
-    start_time: int
-    end_time: int
-    subjects: List[str]
-
-@app.put("/api/admin/jobs/{job_id}/transcript")
-async def update_transcript(
+@app.put("/api/admin/jobs/{job_id}/content")
+async def update_job_content(
     job_id: int,
-    segments: List[TranscriptSegment],
+    content: TranscriptUpdate,
     token: str = Depends(verify_clerk_token)
 ):
-    """Update job transcript segments"""
+    """Update job transcript content"""
     try:
-        await workflow_manager.update_transcript(job_id, [s.dict() for s in segments])
+        await workflow_manager.update_content(job_id, content.transcript)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -234,6 +235,45 @@ async def delete_archive(
         }
     except Exception as e:
         logger.error(f"Error deleting archive: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/admin/jobs/{job_id}/process-transcript")
+async def process_transcript(
+    job_id: int,
+    token: str = Depends(verify_clerk_token)
+):
+    """Process transcript for a job by calling parse_transcript and process_video"""
+    try:
+        # Get job details
+        job_details = workflow_manager.get_job_details(job_id)
+        if not job_details or not job_details.get('job'):
+            raise HTTPException(status_code=404, detail="Job not found")
+            
+        # Get the transcript from job details
+        transcript = job_details['job'].get('transcript')
+        if not transcript:
+            raise HTTPException(status_code=400, detail="No transcript found for job")
+            
+        # Parse the transcript
+        metadata = transcript.get('metadata', {})
+        title = metadata.get('title', '')
+        date = metadata.get('date', '')
+        youtube_id = metadata.get('youtube_id', '')
+        transcript_text = transcript.get('transcript', '')
+        
+        parsed_transcript = parse_transcript(title, date, youtube_id, transcript_text)
+        if not parsed_transcript:
+            raise HTTPException(status_code=400, detail="Failed to parse transcript")
+            
+        # Process the video
+        from backend.ingest.content_processor import ContentProcessor
+        from pathlib import Path
+        processor = ContentProcessor(Path("cache"), Path("clip"))
+        await processor.process_video(parsed_transcript, job_id)
+        
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Error processing transcript: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/admin/jobs/{job_id}/log")

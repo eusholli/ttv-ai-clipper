@@ -175,6 +175,12 @@ class TranscriptSearch:
         # Initialize models as None for lazy loading
         self._nlp = None
         self._model = None
+        self._filter_values = None
+        
+        # Initialize filter values
+        with self.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                self._filter_values = self._fetch_filter_values(cur)
         
     @contextmanager
     def get_db_connection(self):

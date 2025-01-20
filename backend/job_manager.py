@@ -11,7 +11,7 @@ import logging
 from backend.transcript_search import TranscriptSearch
 from backend.models import JobStatus, WorkflowState
 from backend.r2_manager import R2Manager
-from backend.ingest import ContentProcessor, CACHE_DIR, CLIP_DIR, process_urls
+from backend.ingest import get_content_processor, CACHE_DIR, CLIP_DIR, process_urls
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +167,7 @@ class JobManager:
 
         try:
             # Initialize processor
+            ContentProcessor = get_content_processor()
             processor = ContentProcessor(CACHE_DIR, CLIP_DIR)
             
             # Process URL with job_id for workflow tracking
@@ -175,12 +176,22 @@ class JobManager:
             if not result:
                 raise Exception("Failed to process URL")
 
+            # Get log content
+            log_content = ""
+            with self.search.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute('SELECT last_log_file FROM ingest_jobs WHERE id = %s', (job_id,))
+                    result = cur.fetchone()
+                    if result and result[0]:
+                        log_content = result[0]
+
             # Send success email
             self.send_email(
                 job.user_email,
                 "Ingest Job Ready for Review",
-                f"Your ingest job for URL {job.url} is ready for review. "
-                f"You can now edit metadata and transcript before proceeding with video processing."
+                f"Your ingest job for URL {job.url} is ready for review.\n\n"
+                f"You can review and edit it at: http://localhost:3000/admin/ingest\n\n"
+                f"Processing Log:\n{log_content}"
             )
 
         except Exception as e:

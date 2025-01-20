@@ -9,11 +9,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Import JobManager at runtime to avoid circular import
-from backend.job_manager import JobManager
-
 class WorkflowManager:
     def __init__(self):
+        # Import at runtime to avoid circular dependency
+        from backend.job_manager import JobManager
         self.job_manager = JobManager()
         self.search = TranscriptSearch()
         self.r2_manager = R2Manager()
@@ -39,7 +38,8 @@ class WorkflowManager:
                             WHEN %s IS NOT NULL THEN %s
                             WHEN %s = 'failed' THEN 'failed'
                             WHEN %s = 'completed' THEN 'completed'
-                            WHEN %s IN ('fetching_html', 'html_fetched', 'editing_metadata', 
+                            WHEN %s = 'editing_metadata' THEN 'waiting'
+                            WHEN %s IN ('fetching_html', 'html_fetched',
                                       'fetching_video', 'video_fetched', 'generating_clips') THEN 'running'
                             ELSE 'pending'
                         END,
@@ -54,7 +54,7 @@ class WorkflowManager:
                             ELSE completed_at
                         END
                     WHERE id = %s
-                ''', (state, state, error_message, status_override, status_override, state, state, state, state, state, status_override, job_id))
+                ''', (state, state, error_message, status_override, status_override, state, state, state, state, state, state, status_override, job_id))
                 conn.commit()
 
     @with_retry
@@ -70,60 +70,36 @@ class WorkflowManager:
                 return result[0] if result else None
 
     @with_retry
-    async def update_metadata(self, job_id: int, metadata: Dict[str, Any]):
-        """Update edited metadata for a job"""
+    async def update_content(self, job_id: int, content: Dict[str, Any]):
+        """Update transcript content in ingest_jobs
+        
+        Args:
+            job_id: The ID of the job to update
+            content: Dictionary containing metadata and transcript text
+        """
         with self.search.get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute('''
-                    INSERT INTO edited_metadata (job_id, title, date, youtube_id, source)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (job_id) 
-                    DO UPDATE SET
-                        title = EXCLUDED.title,
-                        date = EXCLUDED.date,
-                        youtube_id = EXCLUDED.youtube_id,
-                        source = EXCLUDED.source,
-                        created_at = CURRENT_TIMESTAMP
-                ''', (job_id, metadata.get('title'), metadata.get('date'),
-                      metadata.get('youtube_id'), metadata.get('source')))
-                
+                # Get existing transcript to preserve structure
+                cur.execute('SELECT transcript FROM ingest_jobs WHERE id = %s', (job_id,))
+                result = cur.fetchone()
+                if not result or not result[0]:
+                    existing = {}
+                else:
+                    existing = result[0]
+
+                # Update transcript while preserving structure
+                updated = {
+                    "metadata": content.get("metadata", existing.get("metadata", {})),
+                    "transcript": content.get("transcript", existing.get("transcript", ""))
+                }
+
+                # Update in database
                 cur.execute('''
                     UPDATE ingest_jobs 
-                    SET metadata_edited_at = CURRENT_TIMESTAMP
+                    SET transcript = %s::jsonb,
+                        transcript_edited_at = CURRENT_TIMESTAMP
                     WHERE id = %s
-                ''', (job_id,))
-                
-                conn.commit()
-
-    @with_retry
-    async def update_transcript(self, job_id: int, segments: List[Dict[str, Any]]):
-        """Update edited transcript segments for a job"""
-        with self.search.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # First delete existing segments for this job
-                cur.execute(
-                    'DELETE FROM edited_transcripts WHERE job_id = %s',
-                    (job_id,)
-                )
-                
-                # Insert new segments
-                for segment in segments:
-                    cur.execute('''
-                        INSERT INTO edited_transcripts 
-                        (job_id, segment_hash, text, speaker, company, 
-                         start_time, end_time, subjects)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ''', (job_id, segment['segment_hash'], segment['text'],
-                          segment['speaker'], segment['company'],
-                          segment['start_time'], segment['end_time'],
-                          segment['subjects']))
-
-                cur.execute('''
-                    UPDATE ingest_jobs 
-                    SET transcript_edited_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                ''', (job_id,))
-                
+                ''', (json.dumps(updated), job_id))
                 conn.commit()
 
     @with_retry
@@ -136,21 +112,17 @@ class WorkflowManager:
 
         with self.search.get_db_connection() as conn:
             with conn.cursor() as cur:
-                # Get metadata to find youtube_id and url
-                cur.execute(
-                    'SELECT youtube_id FROM edited_metadata WHERE job_id = %s',
-                    (job_id,)
-                )
+                # Get job URL and youtube_id from transcript
+                cur.execute('''
+                    SELECT url, transcript->'metadata'->>'youtube_id' as youtube_id
+                    FROM ingest_jobs 
+                    WHERE id = %s
+                ''', (job_id,))
                 result = cur.fetchone()
-                youtube_id = result[0] if result else None
-
-                # Get job URL
-                cur.execute(
-                    'SELECT url FROM ingest_jobs WHERE id = %s',
-                    (job_id,)
-                )
-                result = cur.fetchone()
-                url = result[0] if result else None
+                if result:
+                    url, youtube_id = result
+                else:
+                    url, youtube_id = None, None
 
                 if youtube_id:
                     # Delete clips from R2
@@ -162,16 +134,6 @@ class WorkflowManager:
                         'DELETE FROM transcripts WHERE youtube_id = %s',
                         (youtube_id,)
                     )
-
-                # Delete edited content
-                cur.execute(
-                    'DELETE FROM edited_transcripts WHERE job_id = %s',
-                    (job_id,)
-                )
-                cur.execute(
-                    'DELETE FROM edited_metadata WHERE job_id = %s',
-                    (job_id,)
-                )
 
                 conn.commit()
 
@@ -217,40 +179,47 @@ class WorkflowManager:
                 )
                 conn.commit()
 
-
     @with_retry
     def get_job_details(self, job_id: int) -> Dict[str, Any]:
-        """Get detailed job information including metadata and transcript"""
-        job = self.job_manager.get_job(job_id)
-        if not job:
-            raise ValueError(f"Job {job_id} not found")
-
+        """Get job details including transcript and workflow state information"""
         with self.search.get_db_connection() as conn:
             with conn.cursor() as cur:
-                # Get edited metadata
-                cur.execute(
-                    'SELECT * FROM edited_metadata WHERE job_id = %s',
-                    (job_id,)
-                )
-                metadata = dict(zip(
-                    ['id', 'job_id', 'title', 'date', 'youtube_id', 'source', 'created_at'],
-                    cur.fetchone() or [None] * 7
-                ))
+                cur.execute('''
+                    SELECT 
+                        transcript,
+                        status,
+                        workflow_state,
+                        detailed_workflow_state,
+                        html_fetch_success,
+                        video_fetch_success,
+                        error_message,
+                        id
+                    FROM ingest_jobs
+                    WHERE id = %s
+                ''', (job_id,))
+                result = cur.fetchone()
+                if not result:
+                    raise ValueError(f"Job {job_id} not found")
+                
+                transcript, status, workflow_state, detailed_workflow_state, html_fetch_success, video_fetch_success, error_message, job_id = result
+                
+                # If transcript is None, use empty structure
+                if transcript is None:
+                    transcript = {
+                        "metadata": {},
+                        "entries": []
+                    }
 
-                # Get edited transcript
-                cur.execute(
-                    'SELECT * FROM edited_transcripts WHERE job_id = %s ORDER BY start_time',
-                    (job_id,)
-                )
-                transcript = [dict(zip(
-                    ['id', 'job_id', 'segment_hash', 'text', 'speaker', 'company',
-                     'start_time', 'end_time', 'subjects', 'created_at'],
-                    row
-                )) for row in cur.fetchall()]
-
-        return {
-            'job': job,
-            'metadata': metadata,
-            'transcript': transcript,
-            'latest_log': self.get_latest_log(job_id)
-        }
+                # Merge transcript with job state info to maintain backward compatibility
+                response = transcript if isinstance(transcript, dict) else {}
+                response["job"] = {
+                    "id": job_id,
+                    "status": status,
+                    "workflow_state": workflow_state,
+                    "detailed_workflow_state": detailed_workflow_state,
+                    "html_fetch_success": html_fetch_success,
+                    "video_fetch_success": video_fetch_success,
+                    "error_message": error_message
+                }
+                
+                return response

@@ -74,32 +74,6 @@ CREATE TABLE ingest_jobs (
     ))
 );
 
--- Edited metadata table for storing processed metadata
-CREATE TABLE edited_metadata (
-    id SERIAL PRIMARY KEY,
-    job_id INTEGER REFERENCES ingest_jobs(id),
-    title TEXT,
-    date TEXT,
-    youtube_id TEXT,
-    source TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(job_id)
-);
-
--- Edited transcripts table for storing processed transcript segments
-CREATE TABLE edited_transcripts (
-    id SERIAL PRIMARY KEY,
-    job_id INTEGER REFERENCES ingest_jobs(id),
-    segment_hash TEXT NOT NULL,
-    text TEXT NOT NULL,
-    speaker TEXT,
-    company TEXT,
-    start_time INTEGER,
-    end_time INTEGER,
-    subjects TEXT[],
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Create updated_at trigger function
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -128,10 +102,6 @@ CREATE INDEX idx_jobs_status ON ingest_jobs (status);
 CREATE INDEX idx_jobs_user_email ON ingest_jobs (user_email);
 CREATE INDEX idx_jobs_workflow_state ON ingest_jobs (workflow_state);
 CREATE INDEX idx_jobs_detailed_workflow_state ON ingest_jobs (detailed_workflow_state);
-
--- Create indexes for edited tables
-CREATE INDEX idx_edited_transcripts_job_id ON edited_transcripts(job_id);
-CREATE INDEX idx_edited_metadata_job_id ON edited_metadata(job_id);
 
 -- Insert initial schema version
 INSERT INTO schema_version (version) VALUES (1);

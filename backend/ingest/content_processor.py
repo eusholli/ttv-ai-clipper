@@ -1,48 +1,198 @@
 import asyncio
 import json
-import hashlib
-import time
+import os
 import traceback
+import hashlib
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Dict, Tuple
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 import backoff
+from bs4 import BeautifulSoup
 
-from .constants import CACHE_DIR, CLIP_DIR, MAX_WORKERS, MIN_DURATION
+from .constants import MAX_WORKERS, MIN_DURATION
 from .logging_setup import logger
 from .models import VideoInfo, TranscriptSegment
-from .transcript_parser import TranscriptParser
+from .new_transcript_parser import parse_raw_html
 from backend.r2_manager import R2Manager
 from backend.video_utils import get_youtube_video, generate_clips
 from backend.transcript_search import TranscriptSearch
 
+
 class ContentProcessor:
-    """Handles content processing with caching and error recovery"""
+    """Handles content processing with error recovery"""
     def __init__(self, cache_dir: Path, clip_dir: Path):
         self.cache_dir = cache_dir
         self.clip_dir = clip_dir
         self.executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
         self.r2_manager = R2Manager()
         self.search = TranscriptSearch()
-        self.transcript_parser = TranscriptParser(self.search.nlp)
         from backend.job_manager import JobManager
         self.job_manager = JobManager()
-        self.cleanup_partial_files()
 
-    def get_segment_hash(self, segment: dict, main_metadata: dict) -> str:
-        hash_string = (
-            f"{segment['text']}"
-            f"{segment['metadata']['start_timestamp']}"
-            f"{segment['metadata']['end_timestamp']}"
-            f"{main_metadata.get('title', '')}"
-            f"{main_metadata.get('date', '')}"
-        )
-        return hashlib.md5(hash_string.encode()).hexdigest()
+    @backoff.on_exception(
+        backoff.expo,
+        (PlaywrightTimeoutError, Exception),
+        max_tries=3
+    )
+    async def fetch_html(self, url: str) -> Optional[str]:
+        """Fetch HTML content from URL using Playwright"""
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                args=['--no-sandbox', '--disable-setuid-sandbox']
+            )
+            context = await browser.new_context()
+            page = await context.new_page()
+            
+            try:
+                await page.goto(url, wait_until='networkidle')
+                await page.wait_for_timeout(2000)
+                return await page.content()
+            except Exception as e:
+                logger.error(f"Error fetching {url}: {str(e)}")
+                raise
+            finally:
+                await browser.close()
 
-    def process_transcript(self, json_data: dict, filename: Optional[str] = None) -> None:
+    def extract_metadata(self, html_content: str) -> Tuple[str, str, str]:
+        """Extract title, date and youtube_id from HTML content"""
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Extract title from meta tags or h1
+            title = None
+            meta_title = soup.find('meta', property='og:title')
+            if meta_title:
+                title = meta_title.get('content')
+            if not title:
+                h1 = soup.find('h1')
+                if h1:
+                    title = h1.text.strip()
+            
+            # Extract date - look for common date patterns
+            date = None
+            date_meta = soup.find('meta', property=['article:published_time', 'datePublished'])
+            if date_meta:
+                date = date_meta.get('content', '').split('T')[0]  # Get just the date part
+            
+            # Extract YouTube ID from meta tags or URL in content
+            youtube_id = None
+            yt_meta = soup.find('meta', property='og:video')
+            if yt_meta:
+                url = yt_meta.get('content', '')
+                if 'youtube.com' in url or 'youtu.be' in url:
+                    # Extract ID from URL
+                    if 'v=' in url:
+                        youtube_id = url.split('v=')[1].split('&')[0]
+                    else:
+                        youtube_id = url.split('/')[-1]
+            
+            return title, date, youtube_id
+            
+        except Exception as e:
+            logger.error(f"Error extracting metadata: {str(e)}")
+            raise
+
+    def extract_transcript(self, html_content: str) -> str:
+        """Extract raw transcript text from HTML content using pattern matching"""
+        import re
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # First try to find any div that contains text matching our transcript pattern
+            # More flexible pattern that handles variations in spacing and punctuation
+            transcript_pattern = re.compile(r'[A-Za-z\s]+\s*,\s*[A-Za-z\s]+\s*\(\s*\d{2}\s*:\s*\d{2}\s*\)\s*:')
+            
+            # Convert HTML to text while preserving some structure
+            text_content = soup.get_text('\n', strip=True)
+            
+            # Split into lines and look for the transcript pattern
+            lines = text_content.split('\n')
+            for i, line in enumerate(lines):
+                if transcript_pattern.match(line):
+                    # Found the start of transcript, join remaining lines
+                    transcript_text = '\n'.join(lines[i:])
+                    
+                    # Clean up the transcript text
+                    # Remove any content after a clear ending pattern (if exists)
+                    end_patterns = [
+                        'video transcripts are provided for reference only',
+                        'Related content',
+                        'Share this video',
+                        'Comments',
+                        'Additional resources',
+                        'About the author',
+                        'Read more',
+                        'Subscribe',
+                        'Follow us',
+                        'More from',
+                        'Tags:',
+                        'Categories:',
+                        'Share this:',
+                        'Like this:'
+                    ]
+                    for pattern in end_patterns:
+                        if pattern in transcript_text:
+                            transcript_text = transcript_text.split(pattern)[0]
+                    
+                    return transcript_text.strip()
+            
+            # If pattern not found in plain text, try searching in HTML
+            # This handles cases where the text might be split across elements
+            all_text = []
+            for element in soup.find_all(['div', 'p', 'span', 'article', 'section']):
+                text = element.get_text(strip=True)
+                if transcript_pattern.search(text):
+                    # Found an element containing the pattern
+                    # First try to get text from the element itself
+                    transcript_element = element
+                    
+                    # If the text is too short, try parent elements
+                    while transcript_element and len(transcript_element.get_text()) < 500:
+                        transcript_element = transcript_element.parent
+                        if not transcript_element:
+                            break
+                    
+                    if transcript_element:
+                        # Get text from the transcript element and its siblings
+                        current = transcript_element
+                        while current and len(all_text) < 100:
+                            # Get text from current element
+                            current_text = current.get_text(strip=True)
+                            if current_text:
+                                all_text.append(current_text)
+                            
+                            # Also check children if this is a container
+                            for child in current.find_all(['div', 'p', 'span'], recursive=False):
+                                child_text = child.get_text(strip=True)
+                                if child_text and child_text not in all_text:
+                                    all_text.append(child_text)
+                            
+                            # Move to next sibling
+                            current = current.find_next_sibling()
+                            
+                            # Stop if we hit an element that likely indicates the end
+                            if current and any(p.lower() in current.get_text().lower() for p in end_patterns):
+                                break
+                    break
+            
+            if all_text:
+                combined_text = '\n'.join(all_text)
+                # Clean up the combined text
+                for pattern in end_patterns:
+                    if pattern in combined_text:
+                        combined_text = combined_text.split(pattern)[0]
+                return combined_text.strip()
+            
+            raise Exception("Could not find transcript content matching expected pattern")
+            
+        except Exception as e:
+            logger.error(f"Error extracting transcript: {str(e)}")
+            raise
+
+    def process_transcript(self, json_data: dict) -> None:
         try:
             transcript = json_data['transcript']
             main_metadata = json_data.get('metadata', {})
@@ -133,14 +283,6 @@ class ContentProcessor:
                 else:
                     raise e
             
-            # Store JSON file in database after successful ingestion
-            if filename:
-                try:
-                    self.search.add_json_file(filename, json.dumps(json_data, ensure_ascii=False))
-                    logger.info(f"Stored JSON file {filename} in database")
-                except Exception as e:
-                    logger.error(f"Failed to store JSON file {filename} in database: {str(e)}")
-
             logger.info(f"Added {new_count} new transcript segments")
             logger.info(f"Skipped {skipped} existing segments")
             
@@ -148,93 +290,131 @@ class ContentProcessor:
             logger.error(f"Error processing transcript: {str(e)}")
             raise
 
-    def cleanup_partial_files(self):
-        """Clean up any partial downloads or failed processing artifacts"""
-        try:
-            # Clean up partial HTML files (0 bytes)
-            for file in self.cache_dir.glob("*.html"):
-                if file.stat().st_size == 0:
-                    logger.info(f"Removing empty HTML file: {file}")
-                    file.unlink()
-
-            # Clean up partial video files (less than 1MB)
-            for pattern in ["*_video.mp4", "*.mp4"]:
-                for file in self.cache_dir.glob(pattern):
-                    if file.stat().st_size < 1_000_000:  # 1MB
-                        logger.info(f"Removing partial video file: {file}")
-                        file.unlink()
-
-            # Clean up empty JSON files
-            for file in self.cache_dir.glob("*.json"):
-                if file.stat().st_size == 0:
-                    logger.info(f"Removing empty JSON file: {file}")
-                    file.unlink()
-
-        except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
-
-    def get_cached_url(self, url: str) -> Tuple[Path, Path]:
-        """Get paths for cached files"""
-        base_name = url.replace('://', '_').replace('/', '_')
-        return (
-            self.cache_dir / f"{base_name}.html",
-            self.cache_dir / f"{base_name}.json",
+    def get_segment_hash(self, segment: dict, main_metadata: dict) -> str:
+        """Generate hash for transcript segment"""
+        hash_string = (
+            f"{segment['text']}"
+            f"{segment['metadata']['start_timestamp']}"
+            f"{segment['metadata']['end_timestamp']}"
+            f"{main_metadata.get('title', '')}"
+            f"{main_metadata.get('date', '')}"
         )
+        return hashlib.md5(hash_string.encode()).hexdigest()
 
-    def get_cached_video(self, youtube_id: str) -> Path:
-        """Get paths for cached files"""
-        return (
-            self.cache_dir / f"{youtube_id}.mp4" 
-        )
+    async def process_video(self, info: VideoInfo, job_id: Optional[int] = None) -> VideoInfo:
+        """Process video for a given VideoInfo object"""
 
-    @backoff.on_exception(
-        backoff.expo,
-        (PlaywrightTimeoutError, Exception),
-        max_tries=3
-    )
-    async def fetch_url(self, page, url: str) -> Optional[str]:
-        """Fetch URL content with retry logic"""
         try:
-            await page.goto(url, wait_until='networkidle')
-            await page.wait_for_timeout(2000)
-            return await page.content()
-        except Exception as e:
-            logger.error(f"Error fetching {url}: {str(e)}")
-            raise
+             # Setup job-specific logging if job_id is provided
+            db_handler = None
+            if job_id is not None:
+                from .logging_setup import setup_logging, cleanup_logging
+                db_handler = setup_logging(job_id)
 
-    async def get_client_rendered_content(self, url: str) -> Optional[str]:
-        """Get client-rendered content using Playwright"""
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                args=['--no-sandbox', '--disable-setuid-sandbox']
-            )
-            context = await browser.new_context()
-            page = await context.new_page()
-            
-            try:
-                return await self.fetch_url(page, url)
-            finally:
-                await browser.close()
-
-    async def process_url(self, url: str, job_id: Optional[int] = None) -> Optional[VideoInfo]:
-        # Setup job-specific logging if job_id is provided
-        job_log_file = None
-        if job_id is not None:
-            from .logging_setup import setup_logging
-            job_log_file = setup_logging(job_id)
-
-        """Process URL with caching and error recovery"""
-        html_path, json_path = self.get_cached_url(url)
-
-        # Update workflow state if job_id is provided
-        if job_id:
+            # Import at runtime to avoid circular dependency
             from backend.workflow_manager import WorkflowManager
             workflow_manager = WorkflowManager()
-            await workflow_manager.update_workflow_state(job_id, 'fetching_html')
 
-        # Check if HTML already fetched successfully
-        if html_path.exists() and html_path.stat().st_size > 0:
-            logger.info(f"HTML for {url} already fetched successfully")
+            youtube_id = info.metadata['youtube_id']
+            
+            if job_id:
+                await workflow_manager.update_workflow_state(job_id, 'fetching_video')
+            
+            # Download video
+            logger.info(f"Downloading video {youtube_id}")
+            if not get_youtube_video(str(self.clip_dir), youtube_id):
+                raise Exception(f"Failed to download video {youtube_id}")
+            
+            if job_id:
+                with self.search.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute('''
+                            UPDATE ingest_jobs 
+                            SET video_fetched_at = CURRENT_TIMESTAMP,
+                                video_fetch_success = true
+                            WHERE id = %s
+                        ''', (job_id,))
+                        conn.commit()   
+                await workflow_manager.update_workflow_state(job_id, 'video_fetched')
+
+            if job_id:
+                await workflow_manager.update_workflow_state(job_id, 'generating_clips')
+
+            # Generate and upload clips
+            if info.transcript:
+                logger.info(f"Generating clips for {youtube_id}")
+                info_dict = asdict(info)
+                info_dict['transcript'] = await asyncio.get_event_loop().run_in_executor(
+                    self.executor,
+                    generate_clips,
+                    str(self.clip_dir),
+                    info_dict
+                )
+                info = VideoInfo(
+                    metadata=info_dict['metadata'],
+                    transcript=[TranscriptSegment(**segment) for segment in info_dict['transcript']]
+                )
+                
+                # Upload clips to R2
+                clip_pattern = f"{youtube_id}_*.mp4"
+                new_clips = list(self.clip_dir.glob(clip_pattern))
+                upload_success = True
+                for clip in new_clips:
+                    if not self.r2_manager.upload_file(str(clip), clip.name):
+                        upload_success = False
+                        logger.error(f"Failed to upload clip {clip.name} to R2")
+                        break
+                
+                if not upload_success:
+                    logger.error("Failed to upload clips to R2 storage")
+                    raise Exception("Failed to upload clips to R2 storage")
+            
+            if job_id:
+                await workflow_manager.update_workflow_state(job_id, 'completed')
+                
+                # Clean up logging
+                if db_handler:
+                    cleanup_logging(db_handler)
+            
+            return info
+        except Exception as e:
+            error_msg = f"Error processing video {youtube_id}: {str(e)}\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            if job_id:
+                # Import at runtime to avoid circular dependency
+                from backend.workflow_manager import WorkflowManager
+                workflow_manager = WorkflowManager()
+                await workflow_manager.update_workflow_state(job_id, 'failed', error_msg)
+                
+                # Clean up logging
+                if db_handler:
+                    cleanup_logging(db_handler)
+            
+
+    async def process_url(self, url: str, job_id: Optional[int] = None) -> Optional[VideoInfo]:
+        """Process URL and extract transcript information"""
+        try:
+            # Import at runtime to avoid circular dependency
+            from backend.workflow_manager import WorkflowManager
+            workflow_manager = WorkflowManager()
+            
+            # Setup job-specific logging if job_id is provided
+            db_handler = None
+            if job_id is not None:
+                from .logging_setup import setup_logging, cleanup_logging
+                db_handler = setup_logging(job_id)
+
+            # Update workflow state if job_id is provided
+            if job_id:
+                await workflow_manager.update_workflow_state(job_id, 'fetching_html')
+
+            # 1. Fetch HTML content
+            logger.info(f"Fetching content for {url}")
+            html_content = await self.fetch_html(url)
+            if not html_content:
+                logger.error("Failed to fetch HTML content")
+                html_content = ""
+
             if job_id:
                 with self.search.get_db_connection() as conn:
                     with conn.cursor() as cur:
@@ -245,244 +425,65 @@ class ContentProcessor:
                             WHERE id = %s
                         ''', (job_id,))
                         conn.commit()
-                
-                from backend.workflow_manager import WorkflowManager
-                workflow_manager = WorkflowManager()
                 await workflow_manager.update_workflow_state(job_id, 'html_fetched')
-        else:
-            try:
-                # Fetch and cache HTML
-                logger.info(f"Fetching content for {url}")
-                content = await self.get_client_rendered_content(url)
-                if content:
-                    html_path.write_text(content, encoding='utf-8')
-                    if job_id:
-                        with self.search.get_db_connection() as conn:
-                            with conn.cursor() as cur:
-                                cur.execute('''
-                                    UPDATE ingest_jobs 
-                                    SET html_fetched_at = CURRENT_TIMESTAMP,
-                                        html_fetch_success = true
-                                    WHERE id = %s
-                                ''', (job_id,))
-                                conn.commit()
-                        
-                        from backend.workflow_manager import WorkflowManager
-                        workflow_manager = WorkflowManager()
-                        await workflow_manager.update_workflow_state(job_id, 'html_fetched')
-                else:
-                    raise Exception("Failed to fetch HTML content")
-            except Exception as e:
-                if job_id:
-                    from backend.workflow_manager import WorkflowManager
-                    workflow_manager = WorkflowManager()
-                    await workflow_manager.update_workflow_state(job_id, 'failed', str(e))
-                raise
 
-        try:
-            # Extract information from HTML
-            content = html_path.read_text(encoding='utf-8')
-            info = self.transcript_parser.extract_info(content)
-            if not info:
-                raise Exception("Failed to extract information from content")
+            # 2. Extract metadata from HTML
+            title, date, youtube_id = self.extract_metadata(html_content)
+            if not title or not youtube_id:
+                logger.error("Failed to extract required metadata")
+                title = title or "Unknown"
+                youtube_id = youtube_id or "Unknown"
 
-            if job_id:
-                from backend.workflow_manager import WorkflowManager
-                workflow_manager = WorkflowManager()
-                await workflow_manager.update_workflow_state(job_id, 'editing_metadata')
+            # 3. Extract transcript text
+            transcript_text = self.extract_transcript(html_content)
+            if not transcript_text:
+                logger.error("Failed to extract transcript text")
+                transcript_text = ""
 
-            # Check for edited metadata
+            # 4. Parse transcript using parse_raw_html
+            json_data = parse_raw_html(title, date, youtube_id, transcript_text)
+            if not json_data:
+                logger.error("Failed to parse transcript")
+                json_data = {
+                    "metadata": {
+                        "title": title,
+                        "date": date,
+                        "youtube_id": youtube_id
+                    },
+                    "transcript": []
+                }
+
+            # Store transcript JSON in database
             if job_id:
                 with self.search.get_db_connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute('''
-                            SELECT title, date, youtube_id, source
-                            FROM edited_metadata
-                            WHERE job_id = %s
-                        ''', (job_id,))
-                        edited_metadata = cur.fetchone()
-                        if edited_metadata:
-                            info.metadata.update({
-                                'title': edited_metadata[0],
-                                'date': edited_metadata[1],
-                                'youtube_id': edited_metadata[2],
-                                'source': edited_metadata[3]
-                            })
+                            UPDATE ingest_jobs 
+                            SET transcript = %s
+                            WHERE id = %s
+                        ''', (json.dumps(json_data), job_id))
+                        conn.commit()
 
-            # Process video if needed
-            if info.metadata.get('youtube_id'):
-                youtube_id = info.metadata['youtube_id']
-                video_path = self.get_cached_video(youtube_id)
+                # After metadata and transcript are found, transition to editing metadata state
+                await workflow_manager.update_workflow_state(job_id, 'editing_metadata')
 
-                if job_id:
-                    from backend.workflow_manager import WorkflowManager
-                    workflow_manager = WorkflowManager()
-                    await workflow_manager.update_workflow_state(job_id, 'fetching_video')
-                
-                # Check if video needs to be downloaded
-                if not video_path.exists() or video_path.stat().st_size == 0:
-                    logger.info(f"Downloading video {youtube_id}")
-                    if not get_youtube_video(str(self.cache_dir), youtube_id):
-                        raise Exception(f"Failed to download video {youtube_id}")
-                    
-                    if job_id:
-                        with self.search.get_db_connection() as conn:
-                            with conn.cursor() as cur:
-                                cur.execute('''
-                                    UPDATE ingest_jobs 
-                                    SET video_fetched_at = CURRENT_TIMESTAMP,
-                                        video_fetch_success = true
-                                    WHERE id = %s
-                                ''', (job_id,))
-                                conn.commit()
-                        
-                        from backend.workflow_manager import WorkflowManager
-                        workflow_manager = WorkflowManager()
-                        await workflow_manager.update_workflow_state(job_id, 'video_fetched')
-                else:
-                    logger.info(f"Video {youtube_id} already cached at {video_path}")
-
-                # Check for edited transcript
-                if job_id:
-                    with self.search.get_db_connection() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute('''
-                                SELECT segment_hash, text, speaker, company, 
-                                       start_time, end_time, subjects
-                                FROM edited_transcripts
-                                WHERE job_id = %s
-                                ORDER BY start_time
-                            ''', (job_id,))
-                            edited_segments = cur.fetchall()
-                            if edited_segments:
-                                info.transcript = [
-                                    TranscriptSegment(
-                                        metadata={
-                                            'segment_hash': seg[0],
-                                            'speaker': seg[2],
-                                            'company': seg[3],
-                                            'start_timestamp': seg[4],
-                                            'end_timestamp': seg[5],
-                                            'subjects': seg[6]
-                                        },
-                                        text=seg[1]
-                                    ) for seg in edited_segments
-                                ]
-
-                if job_id:
-                    from backend.workflow_manager import WorkflowManager
-                    workflow_manager = WorkflowManager()
-                    await workflow_manager.update_workflow_state(job_id, 'generating_clips')
-
-                # Generate and upload clips
-                if info.transcript:
-                    logger.info(f"Generating clips for {youtube_id}")
-                    info_dict = asdict(info)
-                    info_dict['transcript'] = await asyncio.get_event_loop().run_in_executor(
-                        self.executor,
-                        generate_clips,
-                        str(self.cache_dir),
-                        info_dict
-                    )
-                    info = VideoInfo(
-                        metadata=info_dict['metadata'],
-                        transcript=[TranscriptSegment(**segment) for segment in info_dict['transcript']]
-                    )
-                    
-                    # Upload clips to R2
-                    clip_pattern = f"{youtube_id}_*.mp4"
-                    new_clips = list(self.clip_dir.glob(clip_pattern))
-                    upload_success = True
-                    for clip in new_clips:
-                        if not self.r2_manager.upload_file(str(clip), clip.name):
-                            upload_success = False
-                            logger.error(f"Failed to upload clip {clip.name} to R2")
-                            break
-                    
-                    if not upload_success:
-                        raise Exception("Failed to upload clips to R2 storage")
-
-            # Save results
-            json_path.write_text(
-                json.dumps(asdict(info), ensure_ascii=False, indent=2),
-                encoding='utf-8'
-            )
-
-            # Process transcript
-            try:
-                logger.info("Processing transcript...")
-                with open(json_path, 'r') as f:
-                    json_data = json.load(f)
-                self.process_transcript(json_data, filename=json_path.name)
-                logger.info("Successfully processed transcript")
-
-                if job_id:
-                    from backend.workflow_manager import WorkflowManager
-                    workflow_manager = WorkflowManager()
-                    await workflow_manager.update_workflow_state(job_id, 'completed')
-
-            except Exception as e:
-                logger.error(f"Error processing transcript: {str(e)}")
-                if job_id:
-                    from backend.workflow_manager import WorkflowManager
-                    workflow_manager = WorkflowManager()
-                    await workflow_manager.update_workflow_state(job_id, 'failed', str(e))
-                raise
-
-            # Update job log in database if job_id is provided
-            if job_id and job_log_file:
-                try:
-                    with open(job_log_file, 'r') as f:
-                        log_content = f.read()
-                    with self.search.get_db_connection() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute('''
-                                UPDATE ingest_jobs 
-                                SET last_log_file = %s
-                                WHERE id = %s
-                            ''', (log_content, job_id))
-                            conn.commit()
-                except Exception as log_e:
-                    logger.error(f"Failed to update job log in database: {str(log_e)}")
+            # Clean up logging on success
+            if db_handler:
+                cleanup_logging(db_handler)
             
-            return info
+            return True # info
 
         except Exception as e:
             error_msg = f"Error processing {url}: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_msg)
             if job_id:
+                # Import at runtime to avoid circular dependency
                 from backend.workflow_manager import WorkflowManager
                 workflow_manager = WorkflowManager()
                 await workflow_manager.update_workflow_state(job_id, 'failed', error_msg)
                 
-                # Update job log in database even on failure
-                if job_log_file:
-                    try:
-                        with open(job_log_file, 'r') as f:
-                            log_content = f.read()
-                        with self.search.get_db_connection() as conn:
-                            with conn.cursor() as cur:
-                                cur.execute('''
-                                    UPDATE ingest_jobs 
-                                    SET last_log_file = %s
-                                    WHERE id = %s
-                                ''', (log_content, job_id))
-                                conn.commit()
-                    except Exception as log_e:
-                        logger.error(f"Failed to update job log in database: {str(log_e)}")
+                # Clean up logging
+                if db_handler:
+                    cleanup_logging(db_handler)
             
             return None
-
-    def load_cached_result(self, url: str) -> Optional[VideoInfo]:
-        """Load cached processing result"""
-        _, json_path= self.get_cached_url(url)
-        try:
-            if json_path.exists():
-                data = json.loads(json_path.read_text(encoding='utf-8'))
-                return VideoInfo(
-                    metadata=data['metadata'],
-                    transcript=[TranscriptSegment(**segment) for segment in data['transcript']]
-                )
-        except Exception as e:
-            logger.error(f"Error loading cached result for {url}: {e}")
-        return None

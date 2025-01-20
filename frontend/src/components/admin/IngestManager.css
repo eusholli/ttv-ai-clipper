@@ -125,6 +125,14 @@ th {
   background: #383d41;
 }
 
+.status-waiting {
+  background: #fff7e6;
+  color: #805500;
+}
+.status-waiting::before {
+  background: #805500;
+}
+
 /* Workflow states */
 .status-fetching_html::before {
   animation: pulse 1.5s infinite;
