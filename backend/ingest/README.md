@@ -40,7 +40,13 @@ The main class that handles content processing with features like:
 - Database integration
 - R2 storage integration
 
-### TranscriptParser
+### Transcript Parser Functions
+
+The transcript_parser module provides functions for parsing and processing transcript content:
+
+- parse_transcript: Parses transcript content into segments with metadata
+- parse_raw_html: Parses raw HTML transcript text into structured segments
+- get_segment_hash: Generates a hash for transcript segments
 
 Handles the parsing of transcript content with:
 - Speaker information extraction
@@ -52,7 +58,7 @@ Handles the parsing of transcript content with:
 
 Data classes for structured data handling:
 - TranscriptSegment: Individual transcript segments
-- VideoInfo: Complete video information including metadata
+- Transcript: Complete video information including metadata
 
 ## Configuration
 

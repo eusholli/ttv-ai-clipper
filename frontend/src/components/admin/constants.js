@@ -8,5 +8,32 @@ export const WorkflowState = {
   VIDEO_FETCHED: "video_fetched",
   GENERATING_CLIPS: "generating_clips",
   COMPLETED: "completed",
-  FAILED: "failed"
+  FAILED: "failed",
+  DELETED: "deleted"
+};
+
+// Required metadata fields for transcript
+export const RequiredMetadataFields = {
+  TITLE: "title",
+  DATE: "date",
+  YOUTUBE_ID: "youtube_id"
+};
+
+// Transcript structure validation
+export const TranscriptValidation = {
+  // Metadata validation
+  metadata: {
+    required: [RequiredMetadataFields.TITLE, RequiredMetadataFields.DATE, RequiredMetadataFields.YOUTUBE_ID],
+    dateFormats: ["YYYY-MM-DD", "MMM DD, YYYY"]
+  },
+  // Segment validation
+  segment: {
+    required: ["speaker", "company", "start_timestamp", "end_timestamp"],
+    defaults: {
+      speaker: "Unknown",
+      company: "Unknown",
+      subjects: [],
+      download: null
+    }
+  }
 };

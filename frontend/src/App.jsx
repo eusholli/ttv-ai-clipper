@@ -4,6 +4,7 @@ import { ClerkProvider, SignedIn } from '@clerk/clerk-react';
 import './styles.css';
 
 // Components
+import AdminProtectedRoute from './components/auth/AdminProtectedRoute';
 import MainContent from './components/MainContent';
 import SignInPage from './components/auth/SignIn';
 import SignUpPage from './components/auth/SignUp';
@@ -77,7 +78,9 @@ function App() {
               path="/admin/ingest"
               element={
                 <ProtectedRoute>
-                  <IngestManager />
+                  <AdminProtectedRoute>
+                    <IngestManager />
+                  </AdminProtectedRoute>
                 </ProtectedRoute>
               }
             />

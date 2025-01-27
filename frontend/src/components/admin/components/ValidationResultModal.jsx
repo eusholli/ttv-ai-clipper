@@ -9,7 +9,30 @@ const ValidationResultModal = ({ result, onClose }) => {
           <button onClick={onClose} className="close-button">&times;</button>
         </div>
         <div className="modal-body">
-          <pre>{JSON.stringify(result, null, 2)}</pre>
+          {result.success ? (
+            <div className="success-message">
+              <div className="success-header">
+                <span className="success-icon">✓</span>
+                <h4>Validation Successful</h4>
+              </div>
+              <div className="metadata-section">
+                <h5>Metadata</h5>
+                <pre>{JSON.stringify(result.data.metadata, null, 2)}</pre>
+              </div>
+              <div className="segments-section">
+                <h5>Parsed Segments ({result.data.transcript.length})</h5>
+                <pre>{JSON.stringify(result.data.transcript, null, 2)}</pre>
+              </div>
+            </div>
+          ) : (
+            <div className="error-message">
+              <div className="error-header">
+                <span className="error-icon">✕</span>
+                <h4>Validation Failed</h4>
+              </div>
+              <p className="error-text">{result.error}</p>
+            </div>
+          )}
         </div>
         <div className="modal-footer">
           <button onClick={onClose} className="close-button-bottom">Close</button>
@@ -72,6 +95,78 @@ const ValidationResultModal = ({ result, onClose }) => {
           padding: 20px;
           overflow-y: auto;
           flex: 1;
+        }
+
+        .success-message, .error-message {
+          padding: 15px;
+          border-radius: 4px;
+        }
+
+        .success-message {
+          background-color: #f0fff4;
+          border: 1px solid #68d391;
+        }
+
+        .error-message {
+          background-color: #fff5f5;
+          border: 1px solid #fc8181;
+        }
+
+        .success-header, .error-header {
+          display: flex;
+          align-items: center;
+          margin-bottom: 15px;
+        }
+
+        .success-icon {
+          color: #38a169;
+          font-size: 24px;
+          margin-right: 10px;
+        }
+
+        .error-icon {
+          color: #e53e3e;
+          font-size: 24px;
+          margin-right: 10px;
+        }
+
+        .metadata-section, .segments-section {
+          margin-top: 20px;
+          background: #f7fafc;
+          padding: 15px;
+          border-radius: 4px;
+        }
+
+        .error-text {
+          color: #e53e3e;
+          font-weight: 500;
+          margin: 0;
+        }
+
+        .more-segments {
+          color: #718096;
+          font-style: italic;
+          margin-top: 10px;
+        }
+
+        h4 {
+          margin: 0;
+          color: #2d3748;
+        }
+
+        h5 {
+          margin: 0 0 10px 0;
+          color: #4a5568;
+          font-size: 1.1em;
+        }
+
+        pre {
+          background: #fff;
+          padding: 10px;
+          border-radius: 4px;
+          border: 1px solid #e2e8f0;
+          font-size: 0.9em;
+          overflow-x: auto;
         }
 
         .modal-footer {

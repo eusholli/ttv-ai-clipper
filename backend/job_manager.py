@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, EmailStr
+from typing import Optional, Dict, Any
+from pydantic import BaseModel, EmailStr, Field
 from pathlib import Path
 import smtplib
 from email.mime.text import MIMEText
@@ -9,9 +9,7 @@ import os
 from dotenv import load_dotenv
 import logging
 from backend.transcript_search import TranscriptSearch
-from backend.models import JobStatus, WorkflowState
-from backend.r2_manager import R2Manager
-from backend.ingest import get_content_processor, CACHE_DIR, CLIP_DIR, process_urls
+from backend.models import JobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +77,10 @@ class JobManager:
         with self.search.get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
-                    INSERT INTO ingest_jobs (url, status, user_email, detailed_workflow_state)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO ingest_jobs (url, status, user_email)
+                    VALUES (%s, %s, %s)
                     RETURNING id, url, status, created_at, started_at, completed_at, error_message, user_email, detailed_workflow_state
-                ''', (url, JobStatus.PENDING, user_email, WorkflowState.PENDING))
+                ''', (url, JobStatus.PENDING, user_email))
                 
                 conn.commit()
                 row = cur.fetchone()
@@ -159,88 +157,35 @@ class JobManager:
                     for row in cur.fetchall()
                 ]
 
-    async def process_job(self, job_id: int):
-        """Process a job in the background"""
-        job = self.get_job(job_id)
-        if not job or job.status != JobStatus.PENDING:
-            return
+    async def update_job_status(self, job_id: int, status: JobStatus, error_message: Optional[str] = None):
+        """Update job status and timestamps"""
+        with self.search.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('''
+                    UPDATE ingest_jobs 
+                    SET status = %s,
+                        error_message = COALESCE(%s, error_message),
+                        started_at = CASE 
+                            WHEN status = %s AND started_at IS NULL THEN CURRENT_TIMESTAMP
+                            ELSE started_at
+                        END,
+                        completed_at = CASE 
+                            WHEN status IN (%s, %s, %s) THEN CURRENT_TIMESTAMP
+                            ELSE completed_at
+                        END
+                    WHERE id = %s
+                ''', (status, error_message, JobStatus.RUNNING, 
+                      JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.DELETED, 
+                      job_id))
+                conn.commit()
 
-        try:
-            # Initialize processor
-            ContentProcessor = get_content_processor()
-            processor = ContentProcessor(CACHE_DIR, CLIP_DIR)
-            
-            # Process URL with job_id for workflow tracking
-            result = await processor.process_url(job.url, job_id)
-            
-            if not result:
-                raise Exception("Failed to process URL")
-
-            # Get log content
-            log_content = ""
-            with self.search.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute('SELECT last_log_file FROM ingest_jobs WHERE id = %s', (job_id,))
-                    result = cur.fetchone()
-                    if result and result[0]:
-                        log_content = result[0]
-
-            # Send success email
-            self.send_email(
-                job.user_email,
-                "Ingest Job Ready for Review",
-                f"Your ingest job for URL {job.url} is ready for review.\n\n"
-                f"You can review and edit it at: http://localhost:3000/admin/ingest\n\n"
-                f"Processing Log:\n{log_content}"
-            )
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Job {job_id} failed: {error_msg}")
-
-            # Update workflow state to failed
-            from backend.workflow_manager import WorkflowManager
-            workflow_manager = WorkflowManager()
-            await workflow_manager.update_workflow_state(job_id, 'failed', error_msg)
-
-            # Send failure email
-            self.send_email(
-                job.user_email,
-                "Ingest Job Failed",
-                f"Your ingest job for URL {job.url} has failed.\nError: {error_msg}"
-            )
-
-    async def mark_job_deleted(self, youtube_id: str):
-        """Mark all jobs associated with a YouTube ID as deleted"""
-        try:
-            logger.info(f"Attempting to mark jobs as deleted for YouTube ID: {youtube_id}")
-            # First get the job IDs
-            with self.search.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute('''
-                        SELECT id FROM ingest_jobs
-                        WHERE url LIKE %s
-                        AND status = %s
-                    ''', (f'%{youtube_id}%', JobStatus.COMPLETED))
-                    
-                    job_ids = [row[0] for row in cur.fetchall()]
-            
-            if job_ids:
-                from backend.workflow_manager import WorkflowManager
-                workflow_manager = WorkflowManager()
-                
-                # Update each job's workflow state to completed with deleted status
-                for job_id in job_ids:
-                    await workflow_manager.update_workflow_state(job_id, 'completed', status_override=JobStatus.DELETED)
-                
-                logger.info(f"Successfully marked {len(job_ids)} jobs as deleted for YouTube ID: {youtube_id}")
-                logger.info(f"Updated job IDs: {job_ids}")
-            else:
-                logger.warning(f"No completed jobs found to mark as deleted for YouTube ID: {youtube_id}")
-                
-        except Exception as e:
-            logger.error(f"Error marking jobs as deleted: {str(e)}")
-            raise
+    def get_job_log(self, job_id: int) -> str:
+        """Get the log file content for a job"""
+        with self.search.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT last_log_file FROM ingest_jobs WHERE id = %s', (job_id,))
+                result = cur.fetchone()
+                return result[0] if result and result[0] else ""
 
     def update_log_file(self, job_id: int, log_content: str):
         """Update the log file content for a job"""

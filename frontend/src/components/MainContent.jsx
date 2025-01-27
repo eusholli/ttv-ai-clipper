@@ -78,10 +78,20 @@ const MainContent = () => {
     }
   }, [selectedFilters]);
 
-  // Fetch available filters on component mount with retry logic
+  // Fetch available filters on component mount with robust retry logic
   useEffect(() => {
+    let retryCount = 0;
+    const maxRetries = 30; // 30 seconds max retry
+    let retryTimeout;
+
     const fetchFilters = async () => {
       try {
+        if (retryCount >= maxRetries) {
+          console.error('Max retries reached for fetching filters');
+          setIsLoading(false);
+          return;
+        }
+
         const response = await fetch(`${BACKEND_URL}/api/filters`);
         if (!response.ok) {
           const errorText = await response.text();
@@ -91,14 +101,26 @@ const MainContent = () => {
         setFilters(data);
         setIsLoading(false);
       } catch (err) {
-        console.error('Error fetching filters:', err);
-        // Retry after 1 second
-        setTimeout(fetchFilters, 1000);
+        console.error(`Error fetching filters (attempt ${retryCount + 1}/${maxRetries}):`, err);
+        retryCount++;
+        // Clear any existing timeout
+        if (retryTimeout) {
+          clearTimeout(retryTimeout);
+        }
+        // Schedule next retry
+        retryTimeout = setTimeout(fetchFilters, 1000);
       }
     };
 
     setIsLoading(true);
     fetchFilters();
+
+    // Cleanup function to clear timeout on unmount
+    return () => {
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+      }
+    };
   }, []);
 
   // Validate and adjust number of results

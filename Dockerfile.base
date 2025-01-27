@@ -11,6 +11,7 @@ RUN echo 'APT::Install-Suggests "0";' >> /etc/apt/apt.conf.d/00-docker \
 # Install dependencies
 RUN apt-get update && apt-get install -y apt-utils && \
     apt-get install -y \
+        redis-server \
         nginx \
         python3-venv \
         procps \

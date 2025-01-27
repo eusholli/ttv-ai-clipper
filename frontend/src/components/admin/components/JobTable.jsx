@@ -3,8 +3,9 @@ import { WorkflowState } from '../constants';
 import { getStatusColor, formatWorkflowState, formatDate, getWorkflowStepClass } from '../utils';
 import { fetchJobLog, deleteContent, processTranscript } from '../api';
 import ContentEditor from './ContentEditor';
+import ButtonWithStatus from './ButtonWithStatus';
 
-const JobTable = ({ 
+const JobTable = ({
   jobs, 
   title, 
   expandedJobs, 
@@ -16,13 +17,35 @@ const JobTable = ({
   onLogFetched
 }) => {
   const [editingContentId, setEditingContentId] = useState(null);
+  const [loadingStates, setLoadingStates] = useState({});
+  const [viewingLogId, setViewingLogId] = useState(null);
 
   const handleProcessTranscript = async (jobId) => {
+    setLoadingStates(prev => ({ ...prev, [`process-${jobId}`]: 'Initiating process...' }));
     try {
       await processTranscript(jobId, getToken);
+      setLoadingStates(prev => ({ ...prev, [`process-${jobId}`]: 'Started processing...' }));
+      // Update job details immediately
       await onJobDetailsUpdate(jobId);
+      // Force a refresh of the main jobs list to move the job to active table
+      const event = new CustomEvent('jobStatusChanged', { detail: { jobId } });
+      window.dispatchEvent(event);
+      
+      // Clear loading state after a brief delay to show "Started" message
+      setTimeout(() => {
+        setLoadingStates(prev => {
+          const newState = { ...prev };
+          delete newState[`process-${jobId}`];
+          return newState;
+        });
+      }, 2000);
     } catch (err) {
       setError(err.message);
+      setLoadingStates(prev => {
+        const newState = { ...prev };
+        delete newState[`process-${jobId}`];
+        return newState;
+      });
     }
   };
 
@@ -31,20 +54,41 @@ const JobTable = ({
       return;
     }
 
+    setLoadingStates(prev => ({ ...prev, [`delete-${jobId}`]: 'Deleting content...' }));
     try {
       await deleteContent(jobId, getToken);
+      
+      // Update job details immediately
       await onJobDetailsUpdate(jobId);
+      
+      // Dispatch event to trigger jobs list refresh
+      const event = new CustomEvent('jobStatusChanged', { detail: { jobId } });
+      window.dispatchEvent(event);
+      
+      setLoadingStates(prev => {
+        const newState = { ...prev };
+        delete newState[`delete-${jobId}`];
+        return newState;
+      });
     } catch (err) {
       setError(err.message);
+      setLoadingStates(prev => {
+        const newState = { ...prev };
+        delete newState[`delete-${jobId}`];
+        return newState;
+      });
     }
   };
 
   const handleLogView = async (jobId) => {
+    setViewingLogId(jobId);
     try {
       const data = await fetchJobLog(jobId, getToken);
       onLogFetched(data.log);
     } catch (err) {
       setError(err.message);
+    } finally {
+      setViewingLogId(null);
     }
   };
 
@@ -76,8 +120,9 @@ const JobTable = ({
                 <td>{formatDate(job.created_at)}</td>
                 <td>{job.user_email}</td>
                 <td>
-                  <button 
+                  <ButtonWithStatus 
                     onClick={() => {
+                      setLoadingStates(prev => ({ ...prev, [`details-${job.id}`]: true }));
                       setExpandedJobs(prev => {
                         const newSet = new Set(prev);
                         if (newSet.has(job.id)) {
@@ -87,11 +132,27 @@ const JobTable = ({
                         }
                         return newSet;
                       });
+                      // Clear loading state after a brief delay
+                      setTimeout(() => {
+                        setLoadingStates(prev => {
+                          const newState = { ...prev };
+                          delete newState[`details-${job.id}`];
+                          return newState;
+                        });
+                      }, 300);
                     }}
+                    isLoading={!!loadingStates[`details-${job.id}`]}
+                    loadingText="Loading..."
                   >
                     {expandedJobs.has(job.id) ? 'Hide Details' : 'Show Details'}
-                  </button>
-                  <button onClick={() => handleLogView(job.id)}>View Log</button>
+                  </ButtonWithStatus>
+                  <ButtonWithStatus 
+                    onClick={() => handleLogView(job.id)}
+                    isLoading={viewingLogId === job.id}
+                    loadingText="Loading log..."
+                  >
+                    View Log
+                  </ButtonWithStatus>
                 </td>
               </tr>
               {expandedJobs.has(job.id) && jobDetailsMap.has(job.id) && (
@@ -124,30 +185,44 @@ const JobTable = ({
                       {jobDetailsMap.get(job.id)?.job && (
                         <div className="details-actions">
                           <>
-                            <button 
+                            <ButtonWithStatus 
                               onClick={() => setEditingContentId(job.id)}
                               disabled={jobDetailsMap.get(job.id).job.detailed_workflow_state === WorkflowState.FETCHING_HTML || 
                                        jobDetailsMap.get(job.id).job.detailed_workflow_state === WorkflowState.FAILED && !jobDetailsMap.get(job.id).job.html_fetch_success}
                             >
                               Edit Content
-                            </button>
-                            <button
+                            </ButtonWithStatus>
+                            <ButtonWithStatus
                               onClick={() => handleProcessTranscript(job.id)}
-                              disabled={!jobDetailsMap.get(job.id).job.transcript}
+                              disabled={
+                                !jobDetailsMap.get(job.id).metadata?.title ||
+                                !jobDetailsMap.get(job.id).metadata?.date ||
+                                !jobDetailsMap.get(job.id).metadata?.youtube_id ||
+                                !jobDetailsMap.get(job.id).job.parsing_status?.success
+                              }
+                              isLoading={!!loadingStates[`process-${job.id}`]}
+                              loadingText={loadingStates[`process-${job.id}`]}
+                              title={
+                                !jobDetailsMap.get(job.id).job.parsing_status?.success
+                                  ? `Parsing failed: ${jobDetailsMap.get(job.id).job.parsing_status?.error || 'Unknown error'}`
+                                  : "Process the transcript to generate clips"
+                              }
                             >
                               Process Transcript
-                            </button>
+                            </ButtonWithStatus>
                           </>
                           {jobDetailsMap.get(job.id).job.status !== 'deleted' && (
-                            <button 
-                              onClick={() => handleDeleteContent(job.id)} 
+                            <ButtonWithStatus
+                              onClick={() => handleDeleteContent(job.id)}
                               className="delete-button"
                               disabled={jobDetailsMap.get(job.id).job.detailed_workflow_state === WorkflowState.FETCHING_HTML ||
                                        jobDetailsMap.get(job.id).job.detailed_workflow_state === WorkflowState.FETCHING_VIDEO ||
                                        jobDetailsMap.get(job.id).job.detailed_workflow_state === WorkflowState.GENERATING_CLIPS}
+                              isLoading={!!loadingStates[`delete-${job.id}`]}
+                              loadingText={loadingStates[`delete-${job.id}`]}
                             >
                               Delete Content
-                            </button>
+                            </ButtonWithStatus>
                           )}
                         </div>
                       )}

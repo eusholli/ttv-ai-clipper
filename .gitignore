@@ -98,3 +98,7 @@ share/python-wheels/
 
 # Project specific ignore
 cache/
+clip/
+
+# Redis file dump
+*.rdb

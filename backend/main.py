@@ -15,9 +15,9 @@ import stripe
 from typing import Optional
 from backend.transcript_search import TranscriptSearch
 from backend.job_manager import JobManager, Job
-from backend.workflow_manager import WorkflowManager
-from backend.models import JobStatus, WorkflowState
-from backend.ingest.new_transcript_parser import parse_raw_html, parse_transcript
+from backend.workflow_processor import WorkflowProcessor
+from backend.models import JobStatus
+from backend.ingest.transcript_parser import parse_transcript
 from typing import List, Optional, Dict, Any
 import logging
 import jwt
@@ -63,12 +63,12 @@ if not stripe.api_key:
 if not STRIPE_WEBHOOK_SECRET:
     raise ValueError("STRIPE_WEBHOOK_SECRET environment variable is required")
 
-# Initialize managers
+# Initialize app and managers
 app = FastAPI()
 job_manager = JobManager()
-workflow_manager = WorkflowManager()
+workflow_processor = WorkflowProcessor()
 
-async def verify_clerk_token(authorization: Optional[str] = Header(None)):
+async def verify_clerk_token(authorization: Optional[str] = Header(None)) -> dict:
     """Verify Clerk JWT token"""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header")
@@ -108,6 +108,15 @@ async def verify_clerk_token(authorization: Optional[str] = Header(None)):
                 public_key,
                 algorithms=["RS256"]
             )
+            
+            # Log token expiration time
+            exp_timestamp = decoded.get('exp')
+            if exp_timestamp:
+                exp_time = datetime.fromtimestamp(exp_timestamp)
+                issued_at = datetime.fromtimestamp(decoded.get('iat', 0))
+                token_lifetime = exp_time - issued_at
+                logger.info(f"Token lifetime: {token_lifetime}, Expires at: {exp_time}, Issued at: {issued_at}")
+            
             return decoded
             
         except jwt.ExpiredSignatureError:
@@ -119,10 +128,20 @@ async def verify_clerk_token(authorization: Optional[str] = Header(None)):
         logger.error(f"Token verification error: {str(e)}")
         raise HTTPException(status_code=500, detail="Token verification failed")
 
+async def admin_required(token: dict = Depends(verify_clerk_token)):
+    """Verify that the user has admin role"""
+    if not token.get("publicMetadata", {}).get("role") == "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access required"
+        )
+    return token
+
 # Job management request models
 class CreateJobRequest(BaseModel):
-    url: str
+    urls: str  # Newline-separated URLs
     user_email: EmailStr
+    auto_approve: bool = False
 
 class ValidateRequest(BaseModel):
     transcript: Dict[str, Any]
@@ -132,17 +151,28 @@ class ValidateRequest(BaseModel):
 async def create_job(
     request: CreateJobRequest,
     background_tasks: BackgroundTasks,
-    token: str = Depends(verify_clerk_token)
+    token: dict = Depends(admin_required)
 ):
-    """Create a new ingest job"""
-    job = await job_manager.create_job(request.url, request.user_email)
-    background_tasks.add_task(job_manager.process_job, job.id)
-    return job
+    """Create new ingest jobs from list of URLs"""
+    # Split URLs and remove whitespace
+    urls = [url.strip() for url in request.urls.split('\n') if url.strip()]
+    
+    # Create jobs for each URL
+    jobs = []
+    async def process_job_wrapper(job_id: int, auto_approve: bool):
+        await workflow_processor.process_job(job_id, auto_approve)
+        
+    for url in urls:
+        job = await job_manager.create_job(url, request.user_email)
+        background_tasks.add_task(process_job_wrapper, job.id, request.auto_approve)
+        jobs.append(job)
+    
+    return jobs[0] if jobs else None  # Return first job for backward compatibility
 
 @app.get("/api/admin/jobs/{job_id}", response_model=Job)
 async def get_job(
     job_id: int,
-    token: str = Depends(verify_clerk_token)
+    token: dict = Depends(admin_required)
 ):
     """Get job status by ID"""
     job = job_manager.get_job(job_id)
@@ -154,20 +184,20 @@ async def get_job(
 def list_jobs(
     user_email: Optional[str] = None,
     limit: int = 100,
-    token: str = Depends(verify_clerk_token)
+    token: dict = Depends(admin_required)
 ):
     """List all jobs with optional filtering"""
     return job_manager.list_jobs(user_email, limit)
 
 # New workflow management endpoints
 @app.get("/api/admin/jobs/{job_id}/details")
-async def get_job_details(
+def get_job_details(
     job_id: int,
-    token: str = Depends(verify_clerk_token)
+    token: dict = Depends(admin_required)
 ):
     """Get detailed job information including metadata and transcript"""
     try:
-        return workflow_manager.get_job_details(job_id)
+        return workflow_processor.get_job_details(job_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -175,23 +205,15 @@ class TranscriptUpdate(BaseModel):
     transcript: Dict[str, Any]
 
 @app.post("/api/admin/jobs/{job_id}/validate")
-async def validate_content(
+async def validate_transcript_endpoint(
     job_id: int,
     content: ValidateRequest,
-    token: str = Depends(verify_clerk_token)
+    token: dict = Depends(admin_required)
 ):
     """Validate and parse transcript content"""
     try:
-        # Get metadata from the transcript
-        metadata = content.transcript.get('metadata', {})
-        title = metadata.get('title', '')
-        date = metadata.get('date', '')
-        youtube_id = metadata.get('youtube_id', '')
-        transcript_text = content.transcript.get('transcript', '')
-
-        # Parse the transcript using parse_raw_html
-        result = parse_transcript(title, date, youtube_id, transcript_text)
-        return result  # FastAPI will automatically convert dict to JSON response
+        result = await workflow_processor.validate_transcript(content.transcript, job_id)
+        return result
     except Exception as e:
         logger.error(f"Error validating content: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -200,23 +222,29 @@ async def validate_content(
 async def update_job_content(
     job_id: int,
     content: TranscriptUpdate,
-    token: str = Depends(verify_clerk_token)
+    token: dict = Depends(admin_required)
 ):
-    """Update job transcript content"""
+    """Update job transcript content and rerun transcript parsing"""
     try:
-        await workflow_manager.update_content(job_id, content.transcript)
-        return {"status": "success"}
+        # Update content first
+        parsing_status = await workflow_processor.update_content(job_id, content.transcript)
+                
+        # Return both success status and parsing status
+        return {
+            "status": "success",
+            "parsing_status": parsing_status
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/admin/jobs/{job_id}/content")
 async def delete_job_content(
     job_id: int,
-    token: str = Depends(verify_clerk_token)
+    token: dict = Depends(admin_required)
 ):
     """Delete all content related to a job including cache files"""
     try:
-        await workflow_manager.delete_content(job_id)            
+        await workflow_processor.delete_content(job_id)            
         return {"status": "success"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -225,11 +253,11 @@ async def delete_job_content(
 
 @app.delete("/api/admin/jobs/archive")
 async def delete_archive(
-    token: str = Depends(verify_clerk_token)
+    token: dict = Depends(admin_required)
 ):
     """Delete all archived jobs (completed, failed, deleted) and their associated content"""
     try:
-        await workflow_manager.delete_content_archive()
+        await workflow_processor.delete_content_archive()
         return {
             "status": "success"
         }
@@ -238,40 +266,25 @@ async def delete_archive(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/admin/jobs/{job_id}/process-transcript")
-async def process_transcript(
+async def process_transcript_endpoint(
     job_id: int,
-    token: str = Depends(verify_clerk_token)
+    background_tasks: BackgroundTasks,
+    token: dict = Depends(admin_required)
 ):
     """Process transcript for a job by calling parse_transcript and process_video"""
     try:
-        # Get job details
-        job_details = workflow_manager.get_job_details(job_id)
-        if not job_details or not job_details.get('job'):
-            raise HTTPException(status_code=404, detail="Job not found")
-            
-        # Get the transcript from job details
-        transcript = job_details['job'].get('transcript')
-        if not transcript:
-            raise HTTPException(status_code=400, detail="No transcript found for job")
-            
-        # Parse the transcript
-        metadata = transcript.get('metadata', {})
-        title = metadata.get('title', '')
-        date = metadata.get('date', '')
-        youtube_id = metadata.get('youtube_id', '')
-        transcript_text = transcript.get('transcript', '')
+        # Update state to running/fetching_video
+        result = await workflow_processor.update_workflow_state(job_id, 'fetching_video')
         
-        parsed_transcript = parse_transcript(title, date, youtube_id, transcript_text)
-        if not parsed_transcript:
-            raise HTTPException(status_code=400, detail="Failed to parse transcript")
-            
-        # Process the video
-        from backend.ingest.content_processor import ContentProcessor
-        from pathlib import Path
-        processor = ContentProcessor(Path("cache"), Path("clip"))
-        await processor.process_video(parsed_transcript, job_id)
+        # Add background task for transcript processing
+        background_tasks.add_task(
+            workflow_processor.process_transcript,
+            job_id
+        )
         
-        return {"status": "success"}
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Error processing transcript: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -279,10 +292,10 @@ async def process_transcript(
 @app.get("/api/admin/jobs/{job_id}/log")
 async def get_job_log(
     job_id: int,
-    token: str = Depends(verify_clerk_token)
+    token: dict = Depends(admin_required)
 ):
     """Get the latest log file for a job"""
-    log_content = workflow_manager.get_latest_log(job_id)
+    log_content = workflow_processor.get_latest_log(job_id)
     if not log_content:
         raise HTTPException(status_code=404, detail="No log file found")
     return {"log": log_content}

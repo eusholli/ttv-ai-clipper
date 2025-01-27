@@ -66,9 +66,14 @@ COPY backend/logging.conf .
 RUN mkdir -p /var/log/fastapi && \
     chown -R www-data:www-data /var/log/fastapi
 
-# Create directories for temporary files and Cloud SQL socket
+# Create directories for temporary files, Cloud SQL socket, and Celery
 RUN mkdir -p /tmp/app && chmod 777 /tmp/app && \
-    mkdir -p /cloudsql && chmod 777 /cloudsql
+    mkdir -p /cloudsql && chmod 777 /cloudsql && \
+    mkdir -p /var/log/celery && \
+    touch /var/log/celery/celery.log && \
+    chown -R nobody:nogroup /var/log/celery && \
+    chmod 755 /var/log/celery && \
+    chmod 644 /var/log/celery/celery.log
 
 EXPOSE 80
 

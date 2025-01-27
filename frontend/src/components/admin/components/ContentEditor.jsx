@@ -10,26 +10,10 @@ const ContentEditor = ({ jobId, jobDetails, onClose, onUpdate, getToken, setErro
     metadata: {
       ...jobDetails?.metadata
     },
-    transcript: jobDetails?.transcript || ''
+    raw_transcript: jobDetails?.raw_transcript || ''
   });
 
-  if (!jobDetails?.metadata || !jobDetails?.transcript) return null;
-
-  const parseTranscript = (text) => {
-    // Split into segments by double newlines
-    const segments = text.split('\n\n');
-    const parsedSegments = [];
-
-    for (const segment of segments) {
-      // Match pattern: "Speaker, Company (MM:SS): Text"
-      const match = segment.match(/^(.*?), (.*?)\s*\((\d+:\d+)\):\s*(.*)$/s);
-      if (match) {
-        const [_, speaker, company, timestamp, text] = match;
-        parsedSegments.push({ speaker, company, timestamp, text });
-      }
-    }
-    return parsedSegments;
-  };
+  if (!jobDetails?.metadata) return null;
 
   const handleMetadataChange = (field, value) => {
     setContent(prev => ({
@@ -43,8 +27,11 @@ const ContentEditor = ({ jobId, jobDetails, onClose, onUpdate, getToken, setErro
 
   const handleSave = async () => {
     try {
-      await updateContent(jobId, content, getToken);
-      await onUpdate(jobId); // Pass jobId to onUpdate
+      const result = await updateContent(jobId, content, getToken);
+      if (result.parsing_status) {
+        // Update job details with new parsing status before closing
+        await onUpdate(jobId);
+      }
       onClose();
     } catch (err) {
       setError(err.message);
@@ -103,15 +90,19 @@ const ContentEditor = ({ jobId, jobDetails, onClose, onUpdate, getToken, setErro
 
         {activeTab === 'transcript' && (
           <div className="transcript-section">
-            <textarea
-              value={content.transcript}
-              onChange={(e) => setContent(prev => ({
-                ...prev,
-                transcript: e.target.value
-              }))}
-              rows={20}
-              style={{ width: '100%', fontFamily: 'monospace' }}
-            />
+            <div className="raw-transcript">
+              <h4>Raw Transcript</h4>
+              <textarea
+                value={content.raw_transcript}
+                onChange={(e) => setContent(prev => ({
+                  ...prev,
+                  raw_transcript: e.target.value
+                }))}
+                rows={10}
+                style={{ width: '100%', fontFamily: 'monospace' }}
+                placeholder="Enter raw transcript text"
+              />
+            </div>
           </div>
         )}
       </div>
@@ -142,6 +133,15 @@ const ContentEditor = ({ jobId, jobDetails, onClose, onUpdate, getToken, setErro
       )}
 
       <style jsx>{`
+        .raw-transcript {
+          margin-bottom: 20px;
+        }
+
+        .raw-transcript h4 {
+          margin: 0 0 10px 0;
+          color: #333;
+        }
+
         .content-editor {
           background: white;
           border-radius: 8px;

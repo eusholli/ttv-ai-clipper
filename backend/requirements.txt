@@ -20,4 +20,5 @@ PyJWT
 cryptography
 debugpy
 pydantic[email]
-pysrt
+celery
+redis

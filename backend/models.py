@@ -18,3 +18,4 @@ class WorkflowState:
     GENERATING_CLIPS = "generating_clips"
     COMPLETED = "completed"
     FAILED = "failed"
+    DELETED = "deleted"

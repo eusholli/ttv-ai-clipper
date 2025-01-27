@@ -26,6 +26,7 @@ export const getWorkflowStepClass = (jobDetails, step) => {
   const job = jobDetails.job;
   
   if (job.status === 'completed') return 'completed';
+  if (job.status === 'deleted' || job.detailed_workflow_state === WorkflowState.DELETED) return '';
   
   switch (step) {
     case 1: // Fetch HTML

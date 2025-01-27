@@ -1,59 +1,84 @@
 import { useState } from 'react';
+import { useUser } from "@clerk/clerk-react";
 import { createJob } from '../api';
+import ButtonWithStatus from './ButtonWithStatus';
 
 const JobForm = ({ onJobCreated, setError, getToken }) => {
-  const [url, setUrl] = useState('');
-  const [email, setEmail] = useState('');
-  const [loading, setLoading] = useState(false);
+  const { user } = useUser();
+  const [urls, setUrls] = useState('');
+  const [loadingState, setLoadingState] = useState({ loading: false, message: '' });
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [autoApprove, setAutoApprove] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
+    setLoadingState({ loading: true, message: 'Initiating ingest...' });
     setError(null);
 
     try {
-      const newJob = await createJob(url, email, getToken);
+      const newJob = await createJob(urls, user.primaryEmailAddress.emailAddress, getToken, autoApprove);
+      setLoadingState({ loading: true, message: 'Starting job...' });
       onJobCreated(newJob);
       
-      // Clear form
-      setUrl('');
-      setEmail('');
+      // Show success message briefly before resetting
+      setLoadingState({ loading: true, message: 'Job created successfully!' });
+      setTimeout(() => {
+        setLoadingState({ loading: false, message: '' });
+        // Clear form
+        setUrls('');
+      }, 1500);
     } catch (err) {
       setError(err.message);
-    } finally {
-      setLoading(false);
+      setLoadingState({ loading: false, message: '' });
     }
   };
 
   return (
     <form onSubmit={handleSubmit} className="ingest-form">
       <div className="form-group">
-        <label htmlFor="url">URL to Ingest:</label>
-        <input
-          type="url"
-          id="url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
+        <label htmlFor="urls">URLs to Ingest (one per line):</label>
+        <textarea
+          id="urls"
+          value={urls}
+          onChange={(e) => setUrls(e.target.value)}
           required
-          placeholder="https://example.com/transcript"
+          placeholder="https://telecomtv.com/video-page-1&#10;https://telecomtv.com/video-page-2"
+          rows={5}
+          style={{ width: '100%', fontFamily: 'monospace' }}
         />
       </div>
 
       <div className="form-group">
-        <label htmlFor="email">Notification Email:</label>
-        <input
-          type="email"
-          id="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-          placeholder="user@example.com"
-        />
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={autoApprove}
+            onChange={(e) => setAutoApprove(e.target.checked)}
+          />
+          Auto approve transcript if possible
+        </label>
       </div>
 
-      <button type="submit" disabled={loading}>
-        {loading ? 'Creating Job...' : 'Start Ingest'}
-      </button>
+      <div className="form-group">
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={rightsConfirmed}
+            onChange={(e) => setRightsConfirmed(e.target.checked)}
+          />
+          I confirm I have all necessary rights and permissions to use these videos
+        </label>
+      </div>
+
+      <ButtonWithStatus
+        type="submit"
+        className="primary"
+        disabled={loadingState.loading || !rightsConfirmed}
+        isLoading={loadingState.loading}
+        loadingText={loadingState.message}
+      >
+        Start Ingest
+      </ButtonWithStatus>
     </form>
   );
 };

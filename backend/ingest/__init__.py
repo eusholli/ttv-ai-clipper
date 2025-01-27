@@ -1,5 +1,5 @@
 from .processor import process_urls, process_zip_file
-from .models import TranscriptSegment, VideoInfo
+from .models import TranscriptSegment, Transcript
 from .constants import CACHE_DIR, CLIP_DIR, MAX_WORKERS, MIN_DURATION
 
 def get_content_processor():
@@ -12,7 +12,7 @@ __all__ = [
     'process_zip_file',
     'get_content_processor',
     'TranscriptSegment',
-    'VideoInfo',
+    'Transcript',
     'CACHE_DIR',
     'CLIP_DIR',
     'MAX_WORKERS',

@@ -21,11 +21,46 @@ cd "$ROOT_DIR"
 cleanup() {
     echo "Received shutdown signal - cleaning up..."
     kill -TERM "$NGINX_PID" 2>/dev/null
+    kill -TERM "$REDIS_PID" 2>/dev/null
+    kill -TERM "$CELERY_PID" 2>/dev/null
+    kill -TERM "$FASTAPI_PID" 2>/dev/null
     exit 0
 }
 
 # Setup signal handling
 trap cleanup SIGTERM SIGINT SIGQUIT
+
+# Start Redis
+echo "Starting Redis..."
+redis-server --daemonize no &
+REDIS_PID=$!
+
+# Wait for Redis to start
+echo "Waiting for Redis to start..."
+while ! redis-cli ping > /dev/null 2>&1; do
+    if ! kill -0 "$REDIS_PID" 2>/dev/null; then
+        echo "Redis failed to start"
+        exit 1
+    fi
+    sleep 1
+done
+echo "Redis is ready!"
+
+# Start Celery
+echo "Starting Celery worker..."
+celery -A backend.tasks worker \
+    --loglevel=INFO \
+    --concurrency=2 \
+    --pool=prefork &
+CELERY_PID=$!
+
+# Wait briefly for Celery to initialize
+sleep 2
+if ! kill -0 "$CELERY_PID" 2>/dev/null; then
+    echo "Celery failed to start"
+    exit 1
+fi
+echo "Celery worker is ready!"
 
 # Start FastAPI
 echo "Starting FastAPI..."

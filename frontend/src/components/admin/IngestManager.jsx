@@ -4,6 +4,7 @@ import { fetchJobs, fetchJobDetails, deleteArchive } from './api';
 import JobForm from './components/JobForm';
 import JobTable from './components/JobTable';
 import LogViewer from './components/LogViewer';
+import ButtonWithStatus from './components/ButtonWithStatus';
 import './IngestManager.css';
 
 const IngestManager = () => {
@@ -17,11 +18,11 @@ const IngestManager = () => {
   const [archiveDeleteStatus, setArchiveDeleteStatus] = useState('idle');
   const [archiveDeleteProgress, setArchiveDeleteProgress] = useState(0);
 
-  // Fetch jobs and set up polling if needed
+  // Fetch jobs and handle polling
   useEffect(() => {
     let interval;
     
-    const pollIfNeeded = async () => {
+    const checkAndUpdateJobs = async () => {
       const currentJobs = await fetchJobs(getToken);
       setJobs(currentJobs);
       
@@ -29,45 +30,60 @@ const IngestManager = () => {
         job.status !== 'completed' && job.status !== 'failed' && job.status !== 'deleted' && job.status !== 'waiting'
       );
       
-      // If there are active jobs, start polling
-      if (activeJobs.length > 0) {
-        // Clear any existing interval before setting a new one
-        if (interval) {
+      // Update details for both active and expanded jobs
+      const jobsToUpdate = new Set([
+        ...Array.from(expandedJobs),
+        ...activeJobs.map(job => job.id)
+      ]);
+      jobsToUpdate.forEach(jobId => {
+        handleJobDetailsUpdate(jobId);
+      });
+      
+      return activeJobs.length > 0;
+    };
+
+    const startPolling = () => {
+      // Clear any existing interval
+      if (interval) {
+        clearInterval(interval);
+      }
+      
+      // Start new polling interval
+      interval = setInterval(async () => {
+        const hasActiveJobs = await checkAndUpdateJobs();
+        if (!hasActiveJobs) {
           clearInterval(interval);
+          interval = null;
         }
-        
-        interval = setInterval(async () => {
-          const updatedJobs = await fetchJobs(getToken);
-          setJobs(updatedJobs);
-          
-          const stillActive = updatedJobs.filter(job => 
-            job.status !== 'completed' && job.status !== 'failed' && job.status !== 'deleted' && job.status !== 'waiting'
-          );
-          
-          // If no more active jobs, clear the interval
-          if (stillActive.length === 0) {
-            clearInterval(interval);
-            interval = null;
-          } else {
-            // Update details for expanded jobs using current expandedJobs state
-            expandedJobs.forEach(jobId => {
-              handleJobDetailsUpdate(jobId);
-            });
-          }
-        }, 1000);
+      }, 1000);
+    };
+
+    // Handle job status changes
+    const handleJobStatusChange = async () => {
+      const hasActiveJobs = await checkAndUpdateJobs();
+      if (hasActiveJobs) {
+        startPolling();
       }
     };
 
-    // Initial fetch and poll setup
-    pollIfNeeded();
+    // Initial setup
+    checkAndUpdateJobs().then(hasActiveJobs => {
+      if (hasActiveJobs) {
+        startPolling();
+      }
+    });
 
-    // Cleanup function to clear interval when component unmounts or dependencies change
+    // Set up event listener
+    window.addEventListener('jobStatusChanged', handleJobStatusChange);
+
+    // Cleanup
     return () => {
       if (interval) {
         clearInterval(interval);
       }
+      window.removeEventListener('jobStatusChanged', handleJobStatusChange);
     };
-  }, [expandedJobs]); // Re-run when expandedJobs changes
+  }, [expandedJobs, getToken]); // Re-run when expandedJobs or getToken changes
 
   // Fetch job details for expanded jobs
   useEffect(() => {
@@ -135,10 +151,25 @@ const IngestManager = () => {
         const progress = Math.round((deletedCount / initialArchivedCount) * 100);
         setArchiveDeleteProgress(progress);
 
+        // Update job details for any expanded jobs that still exist
+        const remainingExpandedJobs = Array.from(expandedJobs).filter(jobId => 
+          currentJobs.some(job => job.id === jobId)
+        );
+        remainingExpandedJobs.forEach(jobId => {
+          handleJobDetailsUpdate(jobId);
+        });
+
+        // Update expandedJobs to remove any deleted jobs
+        setExpandedJobs(new Set(remainingExpandedJobs));
+
         if (currentArchivedCount === 0) {
           clearInterval(pollInterval);
           setArchiveDeleteStatus('idle');
           setArchiveDeleteProgress(0);
+          
+          // Dispatch event to ensure any remaining jobs are properly refreshed
+          const event = new CustomEvent('jobStatusChanged');
+          window.dispatchEvent(event);
         }
 
         remainingJobs = currentArchivedCount;
@@ -150,6 +181,10 @@ const IngestManager = () => {
           clearInterval(pollInterval);
           setArchiveDeleteStatus('idle');
           setArchiveDeleteProgress(0);
+          
+          // Final refresh to ensure UI is in sync
+          const event = new CustomEvent('jobStatusChanged');
+          window.dispatchEvent(event);
         }
       }, 30000);
 
@@ -195,15 +230,19 @@ const IngestManager = () => {
       <div>
         <div className="archive-header">
           <h2>Archive</h2>
-          <button 
+          <ButtonWithStatus
             onClick={handleDeleteArchive}
             className="delete-button"
             disabled={archiveDeleteStatus !== 'idle'}
+            isLoading={archiveDeleteStatus !== 'idle'}
+            loadingText={
+              archiveDeleteStatus === 'deleting' ? 'Initiating Deletion...' :
+              archiveDeleteStatus === 'polling' ? `Deleting Archive (${archiveDeleteProgress}%)` :
+              'Processing...'
+            }
           >
-            {archiveDeleteStatus === 'deleting' ? 'Initiating Deletion...' :
-             archiveDeleteStatus === 'polling' ? `Deleting Archive (${archiveDeleteProgress}%)` :
-             'Delete All Archived Jobs'}
-          </button>
+            Delete Archive Jobs
+          </ButtonWithStatus>
         </div>
         <JobTable
           jobs={jobs.filter(job => 

@@ -46,7 +46,7 @@ export const fetchJobLog = async (jobId, getToken) => {
   }
 };
 
-export const createJob = async (url, email, getToken) => {
+export const createJob = async (urls, email, getToken, autoApprove = false) => {
   try {
     const token = await getToken();
     const response = await fetch('/api/admin/jobs', {
@@ -55,7 +55,7 @@ export const createJob = async (url, email, getToken) => {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ url, user_email: email })
+      body: JSON.stringify({ urls, user_email: email, auto_approve: autoApprove })
     });
 
     if (!response.ok) {
@@ -73,17 +73,28 @@ export const createJob = async (url, email, getToken) => {
 export const updateContent = async (jobId, content, getToken) => {
   try {
     const token = await getToken();
+    // Ensure content follows the new Transcript model structure
+    const transcriptData = {
+      metadata: content.metadata,
+      raw_transcript: content.raw_transcript,
+      transcript: content.transcript
+    };
+
     const response = await fetch(`/api/admin/jobs/${jobId}/content`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ transcript: content })
+      body: JSON.stringify({ transcript: transcriptData })
     });
 
     if (!response.ok) throw new Error('Failed to update content');
-    return await response.json();
+    const data = await response.json();
+    return {
+      status: data.status,
+      parsing_status: data.parsing_status
+    };
   } catch (err) {
     console.error('Error updating content:', err);
     throw err;
@@ -111,13 +122,20 @@ export const deleteArchive = async (getToken) => {
 export const validateContent = async (jobId, content, getToken) => {
   try {
     const token = await getToken();
+    // Ensure content follows the new Transcript model structure
+    const transcriptData = {
+      metadata: content.metadata,
+      raw_transcript: content.raw_transcript,
+      transcript: content.transcript
+    };
+
     const response = await fetch(`/api/admin/jobs/${jobId}/validate`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ transcript: content })
+      body: JSON.stringify({ transcript: transcriptData })
     });
 
     if (!response.ok) throw new Error('Failed to validate content');

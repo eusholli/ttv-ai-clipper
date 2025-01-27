@@ -44,9 +44,11 @@ const Navigation = () => {
             <Link to="/user-profile" className="nav-link" onClick={() => setIsMenuOpen(false)}>
               My Subscription
             </Link>
-            <Link to="/admin/ingest" className="nav-link" onClick={() => setIsMenuOpen(false)}>
-              Admin Ingest
-            </Link>
+            {user?.publicMetadata?.role === "admin" && (
+              <Link to="/admin/ingest" className="nav-link" onClick={() => setIsMenuOpen(false)}>
+                Add Video
+              </Link>
+            )}
             <button 
               onClick={() => {
                 handleSignOut();

@@ -236,3 +236,42 @@ class R2Manager:
             content = self.get_video_content(url)
             return url, content
         return None, None
+
+    def delete_files_by_prefix(self, prefix: str) -> int:
+        """
+        Delete all files in the bucket that start with the given prefix
+        
+        Args:
+            prefix (str): Prefix to match against object names
+            
+        Returns:
+            int: Number of files deleted
+        """
+        try:
+            # List all objects with the prefix
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=prefix
+            )
+            
+            if 'Contents' not in response:
+                logger.info(f"No files found with prefix: {prefix}")
+                return 0
+                
+            # Prepare objects for deletion
+            objects = [{'Key': obj['Key']} for obj in response['Contents']]
+            deleted_count = len(objects)
+            
+            if objects:
+                # Delete the objects
+                self.s3_client.delete_objects(
+                    Bucket=self.bucket_name,
+                    Delete={'Objects': objects}
+                )
+                logger.info(f"Deleted {deleted_count} files with prefix: {prefix}")
+            
+            return deleted_count
+            
+        except ClientError as e:
+            logger.error(f"Error deleting files with prefix {prefix}: {str(e)}")
+            raise

@@ -93,8 +93,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Maximum number of retries for database operations
-MAX_RETRIES = 3
+MAX_RETRIES = 5  # Increased from 3 to match WorkflowProcessor
 RETRY_DELAY = 1  # seconds
+
+# Additional error types to retry on
+RETRY_ERRORS = (
+    psycopg2.OperationalError,  # Connection related errors
+    psycopg2.InterfaceError,    # Connection related errors
+    psycopg2.InternalError      # Internal database errors
+)
 
 def with_retry(func):
     """Decorator to retry database operations with exponential backoff"""
@@ -104,7 +111,7 @@ def with_retry(func):
         for attempt in range(MAX_RETRIES):
             try:
                 return func(*args, **kwargs)
-            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            except RETRY_ERRORS as e:
                 last_error = e
                 if attempt < MAX_RETRIES - 1:
                     delay = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
@@ -153,13 +160,20 @@ class TranscriptSearch:
                 'password': os.getenv('DB_PWD'),
                 'host': os.getenv('DB_HOST'),
                 'sslmode': 'require',  # Required for Neon database connections
-                'connect_timeout': 30  # Set connection timeout to 30 seconds
+                'connect_timeout': 30,  # Set connection timeout to 30 seconds
+                'keepalives': 1,  # Enable TCP keepalives
+                'keepalives_idle': 5,  # Reduced idle time before first keepalive
+                'keepalives_interval': 2,  # More frequent keepalive retransmits
+                'keepalives_count': 5,  # Reduced number of retries for faster failure detection
+                'tcp_user_timeout': 5000,  # Reduced TCP timeout for faster failure detection
+                'application_name': 'ttv-ai-clipper'  # Identify application in database logs
             }
             
         try:
+            # Use optimized pool settings
             cls._pool = pool.ThreadedConnectionPool(
-                minconn=1,
-                maxconn=20,  # Adjust based on your application's needs
+                minconn=5,  # Increased minimum connections for better availability
+                maxconn=30,  # Increased maximum connections to handle more concurrent operations
                 **connection_args
             )
             logger.info("Database connection pool initialized successfully")
@@ -611,16 +625,23 @@ class TranscriptSearch:
             }
         return None
 
+    @with_retry
     def get_available_filters(self) -> Dict[str, List[str]]:
         """
-        Returns the stored filter values
+        Returns the stored filter values with retry mechanism
         """
-        # Initialize filter values
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                self._filter_values = self._fetch_filter_values(cur)
-                
-        return self._filter_values
+        try:
+            with self.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    self._filter_values = self._fetch_filter_values(cur)
+            return self._filter_values
+        except Exception as e:
+            logger.error(f"Error fetching filter values: {str(e)}")
+            # If we have cached values, return those instead of failing
+            if self._filter_values is not None:
+                logger.info("Returning cached filter values due to database error")
+                return self._filter_values
+            raise
 
     @classmethod
     def close_pool(cls):

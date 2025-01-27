@@ -29,6 +29,8 @@ def setup_logging(job_id: Optional[int] = None) -> Optional[DatabaseLogHandler]:
     return None
 
 def cleanup_logging(db_handler: Optional[DatabaseLogHandler] = None):
-    """Clean up logging handlers"""
+    """Clean up logging handlers and flush any buffered messages"""
     if db_handler:
+        # Ensure any buffered messages are written before removing handler
+        db_handler.flush_buffer()
         logger.removeHandler(db_handler)
