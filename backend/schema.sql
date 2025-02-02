@@ -11,6 +11,7 @@ DROP TRIGGER IF EXISTS update_ingest_jobs_updated_at ON ingest_jobs;
 DROP FUNCTION IF EXISTS update_updated_at_column();
 DROP TABLE IF EXISTS edited_transcripts CASCADE;
 DROP TABLE IF EXISTS edited_metadata CASCADE;
+DROP TABLE IF EXISTS job_transcripts CASCADE;
 DROP TABLE IF EXISTS ingest_jobs CASCADE;
 DROP TABLE IF EXISTS transcripts CASCADE;
 DROP TABLE IF EXISTS schema_version CASCADE;
@@ -65,13 +66,24 @@ CREATE TABLE ingest_jobs (
     user_email TEXT NOT NULL,
     started_at TIMESTAMP WITH TIME ZONE,
     completed_at TIMESTAMP WITH TIME ZONE,
+    final_json JSONB,
+    parsing_status JSONB,
+    metadata JSONB,
+    raw_transcript TEXT,
     
     -- Status and workflow state constraints
-    CONSTRAINT valid_status CHECK (status IN ('pending', 'running', 'completed', 'failed', 'deleted')),
+    CONSTRAINT valid_status CHECK (status IN ('pending', 'running', 'completed', 'failed', 'deleted', 'waiting')),
     CONSTRAINT valid_workflow_state CHECK (workflow_state IN (
         'pending', 'fetching_html', 'html_fetched', 'editing_metadata',
-        'fetching_video', 'video_fetched', 'generating_clips', 'completed', 'failed'
+        'fetching_video', 'video_fetched', 'generating_clips', 'completed', 'failed', 'waiting', 'deleted'
     ))
+);
+
+-- Create job_transcripts table for storing transcript data
+CREATE TABLE job_transcripts (
+    job_id INTEGER PRIMARY KEY REFERENCES ingest_jobs(id),
+    transcript JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create updated_at trigger function
@@ -102,9 +114,18 @@ CREATE INDEX idx_jobs_status ON ingest_jobs (status);
 CREATE INDEX idx_jobs_user_email ON ingest_jobs (user_email);
 CREATE INDEX idx_jobs_workflow_state ON ingest_jobs (workflow_state);
 CREATE INDEX idx_jobs_detailed_workflow_state ON ingest_jobs (detailed_workflow_state);
+CREATE INDEX idx_ingest_jobs_id_status ON ingest_jobs (id, status);
+CREATE INDEX idx_ingest_jobs_metadata ON ingest_jobs USING gin(metadata);
+
+-- Create indexes for job_transcripts table
+CREATE INDEX idx_job_transcripts_created_at ON job_transcripts(created_at);
+
+-- Set statement timeouts
+ALTER DATABASE CURRENT SET statement_timeout = '30s';
+ALTER DATABASE CURRENT SET idle_in_transaction_session_timeout = '30s';
 
 -- Insert initial schema version
-INSERT INTO schema_version (version) VALUES (1);
+INSERT INTO schema_version (version) VALUES (11);
 
 -- Commit the transaction
 COMMIT;

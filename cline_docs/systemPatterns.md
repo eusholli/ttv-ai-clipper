@@ -22,8 +22,14 @@
 ### 4. Database Optimization
 - Connection pooling
 - Transaction isolation levels
-- Statement timeouts
-- Performance indexes
+- Statement timeouts (30s default)
+- Performance indexes for common queries
+- Separate job_transcripts table for large JSONB data
+- JSONB columns for flexible metadata storage
+- GiST and GIN indexes for efficient text search
+- IVFFlat index for vector similarity search
+- Trigger-based timestamp management
+- Workflow state constraints
 
 ### 5. Authentication & Authorization
 - Clerk for user authentication
@@ -49,6 +55,8 @@
 - Redis for caching and job queues
 - R2 for binary storage
 - Efficient data retrieval patterns
+- Consolidated schema management
+- Version-tracked schema changes
 
 ### 4. Security Patterns
 - JWT token validation
@@ -81,6 +89,8 @@
 - Connection pooling
 - Caching strategies
 - Resource efficient processing
+- Statement timeout management
+- Optimized index usage
 
 ### 4. Testing Strategy
 - Unit testing critical components
