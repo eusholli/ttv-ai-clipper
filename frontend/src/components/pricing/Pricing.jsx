@@ -109,7 +109,7 @@ export default function Pricing() {
     <div className="pricing-container">
       <div className="pricing-header">
         <h1>Choose Your Plan</h1>
-        <p className="subtitle">Get unlimited access to Telecom TV's AI-powered video clips</p>
+        <p className="subtitle">Get unlimited access to YouTube's AI-powered video clips</p>
         
         <div className="toggle-container">
           <span className={!isAnnual ? 'active' : ''}>Monthly</span>

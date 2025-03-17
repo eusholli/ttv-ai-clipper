@@ -1,4 +1,5 @@
 sentence-transformers
-spacy
 playwright
+celery
+redis
 

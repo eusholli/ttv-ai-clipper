@@ -2,7 +2,7 @@ update # TTV AI Clipper - Product Context
 
 ## Why This Project Exists
 
-TTV AI Clipper exists to solve the challenge of managing and searching through video content from Telecom TV, making it easier for users to find, share, and utilize specific segments of video content. The project serves as a specialized video content management system that focuses on making telecom-related video content more accessible and useful.
+TTV AI Clipper exists to solve the challenge of managing and searching through video content from YouTube, making it easier for users to find, share, and utilize specific segments of video content. The project serves as a specialized video content management system that focuses on making telecom-related video content more accessible and useful.
 
 ## Problems It Solves
 

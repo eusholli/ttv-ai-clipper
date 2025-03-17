@@ -1,5 +1,5 @@
 # base.Dockerfile
-FROM python:3.11-slim
+FROM python:3.12-slim
 WORKDIR /app
 
 # Set noninteractive frontend and configure apt
@@ -12,6 +12,8 @@ RUN echo 'APT::Install-Suggests "0";' >> /etc/apt/apt.conf.d/00-docker \
 RUN apt-get update && apt-get install -y apt-utils && \
     apt-get install -y \
         redis-server \
+        nodejs \
+        npm \
         nginx \
         python3-venv \
         procps \
@@ -19,13 +21,16 @@ RUN apt-get update && apt-get install -y apt-utils && \
         gcc \
         g++ \
         curl \
+        ffmpeg \
         && rm -rf /var/lib/apt/lists/*
 
 ENV VIRTUAL_ENV=/app/venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 COPY backend/requirements-slow.txt .
-RUN pip install --no-cache-dir -r requirements-slow.txt && \
+RUN pip install --upgrade pip && \
+    BLIS_ARCH="generic" pip install spacy --no-binary blis && \
+    pip install --no-cache-dir -r requirements-slow.txt && \
     python -m spacy download en_core_web_sm && \
     playwright install && \
     playwright install-deps

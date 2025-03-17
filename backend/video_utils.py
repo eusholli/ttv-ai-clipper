@@ -1,9 +1,15 @@
 from moviepy import VideoFileClip
 import os
+import json
 import requests
 from pytube import YouTube
 import yt_dlp
+from dotenv import load_dotenv
 from backend.r2_manager import R2Manager
+from youtube_transcript_api import YouTubeTranscriptApi
+
+# Load environment variables
+load_dotenv()
 
 
 CLIP_DIR = "clip/"
@@ -114,10 +120,10 @@ def generate_clips(cache_dir, info):
             end_time = entry['metadata']['end_timestamp']
 
             # Adjust start and end times
-            # Start 3 second earlier, but not before 0
-            start_time = max(0, start_time - 3)
+            # Start 1 second earlier, but not before 0
+            start_time = max(0, start_time - 1)
             end_time = min(video.duration, end_time +
-                           3) if end_time != 0 else video.duration
+                           1) if end_time != 0 else video.duration
 
             # Generate output filename
             output_filename = (
@@ -163,15 +169,27 @@ def generate_clips(cache_dir, info):
     
     return transcript
 
+def is_youtube_url(url: str) -> bool:
+    """Check if URL is a direct YouTube URL"""
+    return ('youtube.com/watch' in url or 'youtu.be/' in url)
+
+def extract_youtube_id(url: str) -> str:
+    """Extract YouTube ID from URL"""
+    if 'youtube.com/watch' in url and 'v=' in url:
+        return url.split('v=')[1].split('&')[0]
+    elif 'youtu.be/' in url:
+        return url.split('youtu.be/')[1].split('?')[0]
+    return None
+
 def main():
     youtube_id = "tCDvOQI3pco"
     print(f"Testing video download using YouTube ID: {youtube_id}...")
-    video = get_youtube_video(youtube_id)
+    video = get_youtube_video("cache", youtube_id)
     if video:
         print(f"Downloaded video: {video}")
     else:
         print("Failed to download video.")
-
+    
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,82 @@
+# TTV AI Clipper - Project Intelligence
+
+This file captures important patterns, preferences, and project intelligence for the TTV AI Clipper project.
+
+## Project Structure
+
+- **Frontend**: React application in `/frontend` directory
+- **Backend**: FastAPI application in `/backend` directory
+- **Scripts**: Utility scripts in `/bin` directory
+- **Memory Bank**: Project documentation in `/cline_docs` directory
+
+## Critical Implementation Paths
+
+### Database Schema
+- Schema is consolidated in `backend/schema.sql`
+- All migrations have been incorporated into the main schema file
+- Statement timeouts are set to 30s by default for better resource management
+- Performance optimizations include proper indexes for common queries
+
+### Video Processing Workflow
+- Videos are ingested from URLs through the admin interface
+- Celery workers process videos and generate transcripts
+- Content is stored in R2 cloud storage
+- Metadata and transcripts are stored in PostgreSQL
+
+### Search Implementation
+- Hybrid search combining semantic and text-based approaches
+- PostgreSQL full-text search with GiST and GIN indexes
+- IVFFlat index for vector similarity search
+- Filtering by speaker, company, date, title, and subject
+
+## User Preferences
+
+### Code Style
+- Python: Follow PEP 8 guidelines
+- JavaScript: Use ES6+ features
+- React: Functional components with hooks
+- Database: Consistent naming conventions for tables and columns
+
+### Documentation
+- Keep Memory Bank files up to date with project evolution
+- Document all significant changes and decisions
+- Maintain clear API documentation
+- Include comments for complex logic
+
+## Known Challenges
+
+### Performance
+- Large transcript data requires optimized queries
+- Video processing is resource-intensive
+- Search performance must be maintained as data grows
+
+### Security
+- Protect user data and authentication
+- Secure access to video content
+- Manage API keys and secrets properly
+
+## Tool Usage Patterns
+
+### Development
+- Use Docker for local development and testing
+- Run database migrations with `./bin/init_db.sh`
+- Start the backend with `uvicorn main:app --reload`
+- Start the frontend with `npm run dev`
+
+### Deployment
+- Deploy to Google Cloud or Render
+- Use Docker containers for consistent environments
+- Manage environment variables through cloud platform
+- Monitor performance and errors after deployment
+
+## Project Evolution
+
+### Recent Focus
+- Database schema consolidation and optimization
+- Performance improvements for database queries
+- Statement timeout configuration
+
+### Next Steps
+- Monitor database performance with new schema
+- Ensure all applications are compatible with updated schema
+- Update documentation for new database structure

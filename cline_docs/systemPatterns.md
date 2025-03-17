@@ -15,11 +15,24 @@
 - Efficient content delivery
 
 ### 3. Background Processing
-- Celery workers for video processing
+- Celery workers for video and URL processing
 - Asynchronous job management
 - Task queue for scalable processing
+- Separation of long-running tasks from web requests
+- Consistent pattern for handling async operations
+- Proper error handling and state management for background tasks
+- Explicit workflow state transitions for UI synchronization
+- Parameter passing between task chain components
 
-### 4. Database Optimization
+### 4. Workflow State Management
+- State-based workflow progression
+- Explicit state transitions for UI feedback
+- Asynchronous state updates via Celery tasks
+- Auto-processing capabilities based on parsing status
+- UI progress bar synchronized with backend state
+- Proper error state handling and recovery
+
+### 5. Database Optimization
 - Connection pooling
 - Transaction isolation levels
 - Statement timeouts (30s default)
@@ -31,7 +44,7 @@
 - Trigger-based timestamp management
 - Workflow state constraints
 
-### 5. Authentication & Authorization
+### 6. Authentication & Authorization
 - Clerk for user authentication
 - Role-based access control
 - Admin-specific routes and functionality

@@ -1,5 +1,6 @@
 import os
 import logging
+import sys
 from pathlib import Path
 from functools import lru_cache
 from dotenv import load_dotenv
@@ -237,6 +238,34 @@ class R2Manager:
             return url, content
         return None, None
 
+    def delete_file(self, clip_name: str) -> bool:
+        """
+        Delete a specific file from the R2 bucket
+        
+        Args:
+            clip_name (str): Name of the file to delete
+            
+        Returns:
+            bool: True if file was deleted successfully, False otherwise
+        """
+        try:
+            # Check if file exists before attempting to delete
+            if not self.file_exists(clip_name):
+                logger.warning(f"File {clip_name} not found in bucket {self.bucket_name}")
+                return False
+                
+            # Delete the file
+            self.s3_client.delete_object(
+                Bucket=self.bucket_name,
+                Key=clip_name
+            )
+            logger.info(f"Successfully deleted {clip_name} from bucket {self.bucket_name}")
+            return True
+            
+        except ClientError as e:
+            logger.error(f"Error deleting file {clip_name}: {str(e)}")
+            return False
+
     def delete_files_by_prefix(self, prefix: str) -> int:
         """
         Delete all files in the bucket that start with the given prefix
@@ -275,3 +304,120 @@ class R2Manager:
         except ClientError as e:
             logger.error(f"Error deleting files with prefix {prefix}: {str(e)}")
             raise
+
+    def delete_all_objects(self, bucket_name: str) -> int:
+        """
+        Delete all objects in the specified bucket
+        
+        Args:
+            bucket_name (str): Name of the bucket to clear
+            
+        Returns:
+            int: Number of objects deleted
+        """
+        try:
+            total_deleted = 0
+            continuation_token = None
+            
+            # Use pagination to handle buckets with more than 1000 objects
+            while True:
+                # List objects with pagination
+                list_kwargs = {'Bucket': bucket_name}
+                if continuation_token:
+                    list_kwargs['ContinuationToken'] = continuation_token
+                
+                response = self.s3_client.list_objects_v2(**list_kwargs)
+                
+                if 'Contents' not in response:
+                    if total_deleted == 0:
+                        logger.info(f"No objects found in bucket: {bucket_name}")
+                    break
+                
+                # Prepare objects for deletion (max 1000 per request)
+                objects = [{'Key': obj['Key']} for obj in response['Contents']]
+                batch_count = len(objects)
+                
+                if objects:
+                    # Delete the objects
+                    delete_response = self.s3_client.delete_objects(
+                        Bucket=bucket_name,
+                        Delete={'Objects': objects}
+                    )
+                    
+                    # Check for errors in the delete response
+                    if 'Errors' in delete_response and delete_response['Errors']:
+                        for error in delete_response['Errors']:
+                            logger.error(f"Error deleting {error.get('Key')}: {error.get('Code')} - {error.get('Message')}")
+                        batch_count -= len(delete_response['Errors'])
+                    
+                    total_deleted += batch_count
+                    logger.info(f"Deleted {batch_count} objects from bucket: {bucket_name}")
+                
+                # Check if there are more objects to list
+                if response.get('IsTruncated', False):
+                    continuation_token = response.get('NextContinuationToken')
+                else:
+                    break
+            
+            logger.info(f"Total objects deleted from bucket {bucket_name}: {total_deleted}")
+            return total_deleted
+            
+        except ClientError as e:
+            logger.error(f"Error deleting all objects from bucket {bucket_name}: {str(e)}")
+            raise
+
+
+def main():
+    """
+    Main function to run when the script is executed directly.
+    Asks for a bucket name and confirmation before deleting all objects in the bucket.
+    """
+    print("R2 Bucket Cleanup Utility")
+    print("-------------------------")
+    print("WARNING: This will delete ALL objects in the specified bucket.")
+    print("Make sure you have the correct R2 credentials in your environment variables.")
+    print()
+    
+    # Get bucket name from user
+    bucket_name = input("Enter the bucket name: ").strip()
+    if not bucket_name:
+        print("Error: Bucket name cannot be empty.")
+        sys.exit(1)
+    
+    # Ask for confirmation
+    confirmation = input(f"Are you sure you want to delete ALL objects in bucket '{bucket_name}'? (yes/no): ").strip().lower()
+    
+    if confirmation != "yes":
+        print("Operation cancelled.")
+        sys.exit(0)
+    
+    try:
+        # Initialize R2Manager
+        r2_manager = R2Manager()
+        
+        # Override the bucket name with the user-provided one
+        original_bucket = r2_manager.bucket_name
+        r2_manager.bucket_name = bucket_name
+        
+        print(f"Deleting all objects in bucket '{bucket_name}'...")
+        deleted_count = r2_manager.delete_all_objects(bucket_name)
+        
+        if deleted_count > 0:
+            print(f"Successfully deleted {deleted_count} objects from bucket '{bucket_name}'.")
+        else:
+            print(f"No objects found in bucket '{bucket_name}'.")
+            
+    except ValueError as e:
+        print(f"Error: {str(e)}")
+        print("Make sure your environment variables are set correctly.")
+        sys.exit(1)
+    except ClientError as e:
+        print(f"AWS/R2 Error: {str(e)}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

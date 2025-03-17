@@ -209,50 +209,27 @@ class WorkflowProcessor:
             logger.info(f"Starting background processing for job {job_id}")
             logger.info(f"Job details: URL={job.url}, user={job.user_email}")
             
-            # Initialize processor
-            logger.info("Initializing content processor")
-            from backend.ingest import get_content_processor
-            ContentProcessor = get_content_processor()
-            processor = ContentProcessor(CACHE_DIR, CLIP_DIR)
+            # Update job status to RUNNING
+            await self.job_manager.update_job_status(job_id, JobStatus.RUNNING)
+            await self.update_workflow_state(job_id, 'fetching_html')
             
-            # Process URL with job_id for workflow tracking
-            logger.info(f"Beginning URL processing for job {job_id}")
-            process_start = datetime.now()
-            result = await processor.process_url(job.url, job_id)
+            # Submit URL processing to Celery
+            logger.info(f"Submitting URL processing task for job {job_id} to Celery")
+            from backend.tasks import process_url_task
+            process_url_task.delay(job.url, job_id, auto_approve)
             
-            if not result:
-                raise Exception("Failed to process URL")
-            
-            process_duration = (datetime.now() - process_start).total_seconds()
-            logger.info(f"URL processing completed in {process_duration:.2f} seconds")
+            # Note: We don't await completion here as Celery handles it asynchronously
+            # The task will update the workflow state when it completes
+            logger.info(f"URL processing task submitted to Celery queue")
 
             # Get log content for email
             logger.info("Retrieving job log for email notification")
             log_content = self.job_manager.get_job_log(job_id)
 
-            # Check if we should auto-process the transcript
+            # Set email subject and message based on auto_approve
             if auto_approve:
-                logger.info(f"Auto-approve enabled for job {job_id}, checking parsing status")
-                # Get the current parsing status
-                with self.get_read_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute('''
-                            SELECT parsing_status
-                            FROM ingest_jobs 
-                            WHERE id = %s
-                        ''', (job_id,))
-                        result = cur.fetchone()
-                        parsing_status = result[0] if result else None
-
-                if parsing_status and parsing_status.get('success', False):
-                    logger.info(f"Parsing successful, auto-processing transcript for job {job_id}")
-                    await self.process_transcript(job_id)
-                    email_subject = "Ingest Job Processing"
-                    email_message = f"Your ingest job for URL {job.url} is being automatically processed.\n\n"
-                else:
-                    logger.info(f"Parsing failed or not ready, requiring manual review for job {job_id}")
-                    email_subject = "Ingest Job Ready for Review"
-                    email_message = f"Your ingest job for URL {job.url} requires manual review.\n\n"
+                email_subject = "Ingest Job Processing"
+                email_message = f"Your ingest job for URL {job.url} is being processed with auto-approve enabled.\n\n"
             else:
                 email_subject = "Ingest Job Ready for Review"
                 email_message = f"Your ingest job for URL {job.url} is ready for review.\n\n"
@@ -411,15 +388,14 @@ class WorkflowProcessor:
                     logger.info(f"Retrieved youtube_id: {youtube_id}")
 
                     # Delete clips from R2
-                    logger.info(f"While Testing Keep R2 clips for youtube_id: {youtube_id}")
+                    # logger.info(f"While Testing Keep R2 clips for youtube_id: {youtube_id}")
                     r2_start = datetime.now()
                     deleted_clips = 0
-                    '''
+                    
                     logger.info(f"Beginning R2 clip deletion for youtube_id: {youtube_id}")
                     deleted_clips = self.r2_manager.delete_files_by_prefix(youtube_id)
                     r2_duration = (datetime.now() - r2_start).total_seconds()
                     logger.info(f"R2 deletion completed in {r2_duration:.2f} seconds: {deleted_clips} clips deleted")
-                    '''
 
                     # Delete database entries
                     logger.info("Beginning database cleanup phase")

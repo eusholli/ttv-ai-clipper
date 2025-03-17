@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { updateContent, validateContent } from '../api';
 import ValidationResultModal from './ValidationResultModal';
+import SpeakerEditor from './SpeakerEditor';
 
 const ContentEditor = ({ jobId, jobDetails, onClose, onUpdate, getToken, setError }) => {
   const [activeTab, setActiveTab] = useState('metadata');
   const [validationResult, setValidationResult] = useState(null);
   const [showValidationModal, setShowValidationModal] = useState(false);
+  const [speakerMapping, setSpeakerMapping] = useState(null);
   const [content, setContent] = useState({
     metadata: {
       ...jobDetails?.metadata
@@ -25,17 +27,35 @@ const ContentEditor = ({ jobId, jobDetails, onClose, onUpdate, getToken, setErro
     }));
   };
 
+  const handleTranscriptUpdate = (updatedTranscript) => {
+    setContent(prev => ({
+      ...prev,
+      raw_transcript: updatedTranscript
+    }));
+  };
+
+  const handleSpeakerMappingChange = (mapping) => {
+    setSpeakerMapping(mapping);
+  };
+
   const handleSave = async () => {
-    try {
-      const result = await updateContent(jobId, content, getToken);
-      if (result.parsing_status) {
-        // Update job details with new parsing status before closing
-        await onUpdate(jobId);
-      }
-      onClose();
-    } catch (err) {
-      setError(err.message);
-    }
+        try {
+          const result = await updateContent(jobId, content, getToken);
+          if (result.parsing_status) {
+            try {
+              // Update job details with new parsing status before closing
+              await onUpdate(jobId);
+            } catch (updateErr) {
+              console.error("Error updating job details:", updateErr);
+              setError(`Changes were saved but there was an error refreshing job details: ${updateErr.message}`);
+              return; // Don't close the editor if we can't update job details
+            }
+          }
+          onClose();
+        } catch (err) {
+          console.error("Error saving content:", err);
+          setError(`Failed to save changes: ${err.message}`);
+        }
   };
 
   return (
@@ -48,6 +68,12 @@ const ContentEditor = ({ jobId, jobDetails, onClose, onUpdate, getToken, setErro
             onClick={() => setActiveTab('metadata')}
           >
             Metadata
+          </button>
+          <button 
+            className={`tab-button ${activeTab === 'speakers' ? 'active' : ''}`}
+            onClick={() => setActiveTab('speakers')}
+          >
+            Speakers
           </button>
           <button 
             className={`tab-button ${activeTab === 'transcript' ? 'active' : ''}`}
@@ -88,6 +114,14 @@ const ContentEditor = ({ jobId, jobDetails, onClose, onUpdate, getToken, setErro
           </div>
         )}
 
+        {activeTab === 'speakers' && (
+          <SpeakerEditor
+            rawTranscript={content.raw_transcript}
+            onTranscriptUpdate={handleTranscriptUpdate}
+            onSpeakerMappingChange={handleSpeakerMappingChange}
+          />
+        )}
+
         {activeTab === 'transcript' && (
           <div className="transcript-section">
             <div className="raw-transcript">
@@ -115,7 +149,8 @@ const ContentEditor = ({ jobId, jobDetails, onClose, onUpdate, getToken, setErro
               setValidationResult(result);
               setShowValidationModal(true);
             } catch (err) {
-              setError(err.message);
+              console.error("Error validating content:", err);
+              setError(`Failed to validate content: ${err.message}`);
             }
           }} className="validate-button">
             Validate Content

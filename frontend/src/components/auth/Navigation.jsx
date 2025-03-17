@@ -28,7 +28,7 @@ const Navigation = () => {
   return (
     <nav className="auth-nav">
       <div className="nav-left">
-        <Link to="/" className="nav-logo">Telecom TV</Link>
+        <Link to="/" className="nav-logo">YouTube AI Clipper</Link>
       </div>
       
       <button className="hamburger-menu" onClick={toggleMenu} aria-label="Toggle menu">

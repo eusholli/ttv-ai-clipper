@@ -20,5 +20,7 @@ PyJWT
 cryptography
 debugpy
 pydantic[email]
-celery
-redis
+pyannote.audio>=3.1.1
+torch>=2.0.1
+faster-whisper>=0.9.0
+youtube-transcript-api>=0.6.0

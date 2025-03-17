@@ -157,7 +157,8 @@ class TranscriptDbManager:
                 clip_name = entry[5]  # download field contains clip filename
                 if clip_name:
                     logger.info(f"Deleting clip from R2: {clip_name}")
-                    self.r2_manager.delete_file(clip_name)
+                    truncated_clip_name = clip_name.split('/')[-1]
+                    self.r2_manager.delete_file(truncated_clip_name)
 
             # Delete only the entries that remain in existing_set
             if existing_set:

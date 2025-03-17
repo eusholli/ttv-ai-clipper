@@ -176,7 +176,7 @@ const MainContent = () => {
 
   return (
     <div className="container">
-      <h1 className="main-title">Telecom TV AI Clipper</h1>
+      <h1 className="main-title">YouTube AI Clipper</h1>
       
       {isLoading ? (
         <div className="loading-container">
