@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Optional
 
 from .models import Transcript, TranscriptSegment
-from .transcript_parser import parse_transcript, parse_raw_html
+from .transcript_parser import parse_transcript
 from .html_extractor import HtmlExtractor
 from .video_processor import VideoProcessor
 from .transcript_db_manager import TranscriptDbManager

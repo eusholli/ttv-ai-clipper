@@ -15,7 +15,7 @@
 - Efficient content delivery
 
 ### 3. Background Processing
-- Celery workers for video and URL processing
+- Celery workers for YouTube URL and video processing
 - Asynchronous job management
 - Task queue for scalable processing
 - Separation of long-running tasks from web requests

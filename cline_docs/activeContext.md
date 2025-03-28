@@ -6,8 +6,9 @@
 - Enhanced error handling in auto-approve workflow
 
 ## Recent Changes
+- **Simplified Ingestion:** Refactored codebase to support **only YouTube URL ingestion**. Removed code related to generic URL processing (`url_processor._process_regular_url`, `html_extractor.extract_transcript`, `transcript_parser.parse_raw_html`). Added frontend validation for YouTube URLs.
 - Fixed issue with UI progress bar stopping at "Edit Metadata" state for auto-approved YouTube videos
-- Modified `url_processor.py` to remove premature state updates to "editing_metadata"
+- Modified `url_processor.py` to remove premature state updates to "editing_metadata" (prior to simplification)
 - Enhanced `process_url_task` in backend/tasks.py to:
   - Centralize state management logic
   - Add conditional logic for auto-approve workflows
@@ -27,13 +28,12 @@
 - Set statement timeouts for better resource management
 
 ## Next Steps
-1. Test the improved auto-approve feature with various YouTube videos
-2. Monitor UI responsiveness during auto-processing
-3. Verify error handling in auto-approve workflow
-4. Consider additional workflow state improvements for better UI feedback
-5. Monitor performance of Celery tasks for URL and video processing
-6. Consider additional optimizations for other long-running operations
-7. Keep Memory Bank files up to date with project evolution
+1. Test the simplified YouTube-only ingestion workflow thoroughly.
+2. Verify frontend URL validation prevents non-YouTube submissions.
+3. Monitor performance of Celery tasks for YouTube URL and video processing.
+4. Update test suite to remove tests for generic URL ingestion and ensure YouTube tests pass.
+5. Consider further code cleanup related to removed ingestion logic.
+6. Keep Memory Bank files up to date with project evolution.
 
 ## Current State
 - "Auto approve transcript if possible" feature now works correctly for YouTube videos

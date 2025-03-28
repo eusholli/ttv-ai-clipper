@@ -3,12 +3,17 @@ import traceback
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, Any
+import json
+import traceback
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Tuple
 
+# Removed unused imports: List, Dict, Any, TranscriptSegment, parse_transcript, parse_raw_html
 from .logging_setup import logger
-from .models import Transcript, TranscriptSegment
+from .models import Transcript
 from .html_extractor import HtmlExtractor
-from .transcript_parser import parse_transcript, parse_raw_html
 from backend.transcript_search import TranscriptSearch
 from backend.video_utils import is_youtube_url, extract_youtube_id
 from backend.youtube_transcript_maker import get_youtube_transcript
@@ -32,52 +37,58 @@ class UrlProcessor:
     async def process_url(self, url: str, job_id: Optional[int] = None) -> Optional[Transcript]:
         """
         Process URL and extract transcript information.
-        Handles both regular URLs and YouTube URLs.
+        Processes YouTube URLs to extract metadata and raw transcript.
         """
         start_time = datetime.now()
         db_handler = None
-        
+        workflow_processor = None # Initialize workflow_processor
+
         try:
             # Import at runtime to avoid circular dependency
             from backend.workflow_processor import WorkflowProcessor
             workflow_processor = WorkflowProcessor()
-            
+
             # Setup job-specific logging if job_id is provided
             if job_id is not None:
-                from .logging_setup import setup_logging, cleanup_logging
+                from .logging_setup import setup_logging
                 db_handler = setup_logging(job_id)
                 logger.info(f"Starting URL processing for job {job_id}")
                 logger.info(f"Target URL: {url}")
 
-            # Update workflow state if job_id is provided
-            if job_id:
-                await workflow_processor.update_workflow_state(job_id, 'fetching_html')
-                logger.info("Beginning HTML fetch phase")
+            # --- Start of Added Validation ---
+            if not is_youtube_url(url):
+                error_msg = f"Invalid URL: Only YouTube URLs are supported. Received: {url}"
+                logger.error(error_msg)
+                if job_id and workflow_processor:
+                    await workflow_processor.update_workflow_state(job_id, 'failed', error_msg)
+                return None # Or raise an exception
 
-            # Check if this is a YouTube URL
-            is_youtube = is_youtube_url(url)
-            
-            if is_youtube:
-                logger.info(f"Detected YouTube URL: {url}")
-                youtube_id = extract_youtube_id(url)
-                logger.info(f"Extracted YouTube ID: {youtube_id}")
-                
-                if not youtube_id:
-                    logger.error("Failed to extract YouTube ID from URL")
-                    return None
-                
-                # Process as YouTube URL
-                return await self._process_youtube_url(url, youtube_id, job_id, workflow_processor)
-            else:
-                # Process as regular URL
-                return await self._process_regular_url(url, job_id, workflow_processor)
+            youtube_id = extract_youtube_id(url)
+            if not youtube_id:
+                error_msg = f"Failed to extract YouTube ID from URL: {url}"
+                logger.error(error_msg)
+                if job_id and workflow_processor:
+                    await workflow_processor.update_workflow_state(job_id, 'failed', error_msg)
+                return None
+            # --- End of Added Validation ---
+
+            logger.info(f"Detected YouTube URL: {url}")
+            logger.info(f"Extracted YouTube ID: {youtube_id}")
+
+            # Update workflow state if job_id is provided (moved after validation)
+            if job_id:
+                # State update moved here, ensures it happens only for valid YT URLs
+                await workflow_processor.update_workflow_state(job_id, 'fetching_html')
+                logger.info("Beginning YouTube transcript fetch phase")
+
+            # Directly call the YouTube processing method
+            return await self._process_youtube_url(url, youtube_id, job_id, workflow_processor)
+
         except Exception as e:
             error_msg = f"Error processing URL {url}: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_msg)
-            if job_id:
-                # Import at runtime to avoid circular dependency
-                from backend.workflow_processor import WorkflowProcessor
-                workflow_processor = WorkflowProcessor()
+            # Ensure workflow_processor is available for state update
+            if job_id and workflow_processor:
                 await workflow_processor.update_workflow_state(job_id, 'failed', error_msg)
             return None
         finally:
@@ -85,15 +96,11 @@ class UrlProcessor:
             if db_handler:
                 from .logging_setup import cleanup_logging
                 cleanup_logging(db_handler)
-                
+
     async def _process_youtube_url(self, url: str, youtube_id: str, job_id: Optional[int], workflow_processor) -> Optional[Transcript]:
         """Process a YouTube URL using direct transcript fetching"""
+        # Removed redundant state update from here, it's now in process_url
         try:
-            # Update workflow state
-            if job_id:
-                await workflow_processor.update_workflow_state(job_id, 'fetching_html')
-                logger.info("Beginning YouTube transcript fetch phase")
-            
             # Fetch HTML content for metadata (title, date)
             html_fetch_start = datetime.now()
             logger.info(f"Fetching HTML to extract metadata from {url}")
@@ -183,142 +190,14 @@ class UrlProcessor:
                 # Note: We intentionally avoid setting the state to editing_metadata here
                 # to prevent the UI from stopping progress updates when auto_approve is enabled.
                 # State transitions are centrally managed in tasks.py instead.
-            
+
             return transcript_obj
-            
+
         except Exception as e:
             error_msg = f"Error processing YouTube URL {url}: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_msg)
-            if job_id:
+            if job_id and workflow_processor: # Check if workflow_processor exists
                 await workflow_processor.update_workflow_state(job_id, 'failed', error_msg)
             return None
-    
-    async def _process_regular_url(self, url: str, job_id: Optional[int], workflow_processor) -> Optional[Transcript]:
-        """Process a regular URL using HTML extraction"""
-        try:
-            # 1. Fetch HTML content
-            html_fetch_start = datetime.now()
-            logger.info(f"Initiating HTML content fetch from {url}")
-            html_content = await self.html_extractor.fetch_html(url)
-            if not html_content:
-                logger.error("Failed to fetch HTML content")
-                html_content = ""
-            html_fetch_duration = (datetime.now() - html_fetch_start).total_seconds()
-            logger.info(f"HTML fetch completed in {html_fetch_duration:.2f} seconds")
-            logger.info(f"Retrieved {len(html_content)} bytes of HTML content")
 
-            if job_id:
-                with self.search.get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute('''
-                            UPDATE ingest_jobs 
-                            SET html_fetched_at = CURRENT_TIMESTAMP,
-                                html_fetch_success = true
-                            WHERE id = %s
-                        ''', (job_id,))
-                        conn.commit()
-                await workflow_processor.update_workflow_state(job_id, 'html_fetched')
-                logger.info("HTML fetch phase completed successfully")
-
-            # 2. Extract metadata from HTML
-            logger.info("Beginning metadata extraction phase")
-            metadata_start = datetime.now()
-            title, date, youtube_id = self.html_extractor.extract_metadata(html_content, url)
-            if not title or not youtube_id:
-                logger.error("Failed to extract required metadata")
-                logger.info(f"Extracted metadata: title='{title or 'Unknown'}', date='{date or 'Unknown'}', youtube_id='{youtube_id or 'Unknown'}'")
-                title = title or "Unknown"
-                youtube_id = youtube_id or "Unknown"
-            else:
-                logger.info(f"Successfully extracted metadata: title='{title}', date='{date}', youtube_id='{youtube_id}'")
-            metadata_duration = (datetime.now() - metadata_start).total_seconds()
-            logger.info(f"Metadata extraction completed in {metadata_duration:.2f} seconds")
-
-            # 3. Extract transcript text
-            logger.info("Beginning transcript extraction phase")
-            transcript_start = datetime.now()
-            transcript_text = self.html_extractor.extract_transcript(html_content)
-            if not transcript_text:
-                logger.error("Failed to extract transcript text")
-                transcript_text = ""
-            else:
-                transcript_lines = len(transcript_text.split('\n'))
-                transcript_chars = len(transcript_text)
-                logger.info(f"Successfully extracted transcript: {transcript_lines} lines, {transcript_chars} characters")
-            transcript_duration = (datetime.now() - transcript_start).total_seconds()
-            logger.info(f"Transcript extraction completed in {transcript_duration:.2f} seconds")
-
-            # 4. Parse transcript using parse_raw_html
-            logger.info("Beginning transcript parsing phase")
-            parse_start = datetime.now()
-            parse_result = parse_raw_html(title, date, youtube_id, transcript_text)
-            if not parse_result["success"]:
-                logger.error(f"Failed to parse transcript: {parse_result['error']}")
-                transcript_obj = Transcript(
-                    metadata={
-                        "title": title,
-                        "date": date,
-                        "youtube_id": youtube_id
-                    },
-                    raw_transcript=transcript_text,
-                    transcript=[]
-                )
-            else:
-                transcript_obj = parse_result["data"]
-                segments = len(transcript_obj.transcript)
-                logger.info(f"Successfully parsed transcript into {segments} segments")
-            parse_duration = (datetime.now() - parse_start).total_seconds()
-            logger.info(f"Transcript parsing completed in {parse_duration:.2f} seconds")
-
-            # Create Transcript object and store in database
-            if job_id:
-                logger.info("Creating Transcript object and storing in database")
-                store_start = datetime.now()
-                parsing_status = {
-                    "success": parse_result["success"],
-                    "error": parse_result.get("error", "")
-                }
-                
-                # Store in database
-                with self.search.get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute('''
-                            UPDATE ingest_jobs 
-                            SET raw_transcript = %s,
-                                metadata = %s,
-                                parsing_status = %s
-                            WHERE id = %s
-                        ''', (transcript_obj.raw_transcript, json.dumps(transcript_obj.metadata), json.dumps(parsing_status), job_id))
-                        conn.commit()
-                store_duration = (datetime.now() - store_start).total_seconds()
-                logger.info(f"Database storage completed in {store_duration:.2f} seconds")
-
-                # Note: We intentionally avoid setting the state to editing_metadata here
-                # to prevent the UI from stopping progress updates when auto_approve is enabled.
-                # State transitions are centrally managed in tasks.py instead.
-
-            # Log overall completion
-            total_duration = (datetime.now() - start_time).total_seconds()
-            logger.info(f"URL processing completed successfully in {total_duration:.2f} seconds")
-
-            # Clean up logging on success
-            if db_handler:
-                cleanup_logging(db_handler)
-            
-            # Return the Transcript object directly
-            return transcript_obj
-
-        except Exception as e:
-            error_msg = f"Error processing {url}: {str(e)}\n{traceback.format_exc()}"
-            logger.error(error_msg)
-            if job_id:
-                # Import at runtime to avoid circular dependency
-                from backend.workflow_processor import WorkflowProcessor
-                workflow_processor = WorkflowProcessor()
-                await workflow_processor.update_workflow_state(job_id, 'failed', error_msg)
-                
-                # Clean up logging
-                if db_handler:
-                    cleanup_logging(db_handler)
-            
-            return None
+    # --- _process_regular_url method removed ---

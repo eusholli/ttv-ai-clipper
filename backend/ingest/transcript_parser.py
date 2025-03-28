@@ -140,20 +140,4 @@ def parse_transcript(title: str, date: str, youtube_id: str, content: str) -> di
         logger.error(f"Error parsing transcript: {str(e)}")
         return {"success": False, "error": f"Error parsing transcript: {str(e)}"}
 
-def parse_raw_html(title: str, date: str, youtube_id: str, raw_transcript: str) -> dict:
-    """Parse raw transcript text into structured segments"""
-    try:
-        # Basic cleanup
-        text = raw_transcript.strip()
-        
-        # Replace multiple newlines/spaces with single instances
-        text = re.sub(r'\n\s*\n', '\n\n', text)
-        text = re.sub(r' +', ' ', text)
-        
-        # Use parse_transcript to validate and parse the cleaned text
-        return parse_transcript(title, date, youtube_id, text)
-        
-    except Exception as e:
-        from .logging_setup import logger
-        logger.error(f"Error in parse_raw_html: {str(e)}")
-        return {"success": False, "error": f"Error cleaning raw transcript: {str(e)}"}
+# --- parse_raw_html function removed ---

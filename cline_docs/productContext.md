@@ -2,7 +2,7 @@ update # TTV AI Clipper - Product Context
 
 ## Why This Project Exists
 
-TTV AI Clipper exists to solve the challenge of managing and searching through video content from YouTube, making it easier for users to find, share, and utilize specific segments of video content. The project serves as a specialized video content management system that focuses on making telecom-related video content more accessible and useful.
+TTV AI Clipper exists to solve the challenge of managing and searching through video content **exclusively from YouTube**, making it easier for users to find, share, and utilize specific segments of video content. The project serves as a specialized video content management system focused on YouTube content.
 
 ## Problems It Solves
 
@@ -55,8 +55,8 @@ TTV AI Clipper exists to solve the challenge of managing and searching through v
 ### Key Workflows
 
 1. **Content Ingestion**
-   - Admin uploads URLs through the admin interface
-   - System processes videos and generates transcripts
+   - Admin uploads **YouTube URLs** through the admin interface
+   - System processes videos and generates transcripts using YouTube's transcript data
    - Content is stored and indexed for searching
 
 2. **Search and Discovery**

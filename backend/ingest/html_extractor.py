@@ -1,4 +1,4 @@
-import re
+# Removed 're' import as it's only used by the deleted extract_transcript method
 from typing import Tuple, Optional
 
 import backoff
@@ -9,7 +9,7 @@ from .logging_setup import logger
 from backend.video_utils import is_youtube_url, extract_youtube_id
 
 class HtmlExtractor:
-    """Handles fetching and extracting content from HTML pages"""
+    """Handles fetching HTML and extracting metadata""" # Updated docstring
 
     @backoff.on_exception(
         backoff.expo,
@@ -105,98 +105,4 @@ class HtmlExtractor:
             logger.error(f"Error extracting metadata: {str(e)}")
             raise
 
-    def extract_transcript(self, html_content: str) -> str:
-        """Extract raw transcript text from HTML content using pattern matching"""
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # First try to find any div that contains text matching our transcript pattern
-            # More flexible pattern that handles variations in spacing and punctuation
-            transcript_pattern = re.compile(r'[A-Za-z\s]+\s*,\s*[A-Za-z\s]+\s*\([\s*\d{2}\s*:]+\)\s*:')
-            
-            # Convert HTML to text while preserving some structure
-            text_content = soup.get_text('\n', strip=True)
-            
-            # Split into lines and look for the transcript pattern
-            lines = text_content.split('\n')
-            for i, line in enumerate(lines):
-                if transcript_pattern.match(line):
-                    # Found the start of transcript, join remaining lines
-                    transcript_text = '\n'.join(lines[i:])
-                    
-                    # Clean up the transcript text
-                    # Remove any content after a clear ending pattern (if exists)
-                    end_patterns = [
-                        'video transcripts are provided for reference only',
-                        'Related content',
-                        'Share this video',
-                        'Comments',
-                        'Additional resources',
-                        'About the author',
-                        'Read more',
-                        'Subscribe',
-                        'Follow us',
-                        'More from',
-                        'Tags:',
-                        'Categories:',
-                        'Share this:',
-                        'Like this:'
-                    ]
-                    for pattern in end_patterns:
-                        if pattern in transcript_text:
-                            transcript_text = transcript_text.split(pattern)[0]
-                    
-                    return transcript_text.strip()
-            
-            # If pattern not found in plain text, try searching in HTML
-            # This handles cases where the text might be split across elements
-            all_text = []
-            for element in soup.find_all(['div', 'p', 'span', 'article', 'section']):
-                text = element.get_text(strip=True)
-                if transcript_pattern.search(text):
-                    # Found an element containing the pattern
-                    # First try to get text from the element itself
-                    transcript_element = element
-                    
-                    # If the text is too short, try parent elements
-                    while transcript_element and len(transcript_element.get_text()) < 500:
-                        transcript_element = transcript_element.parent
-                        if not transcript_element:
-                            break
-                    
-                    if transcript_element:
-                        # Get text from the transcript element and its siblings
-                        current = transcript_element
-                        while current and len(all_text) < 100:
-                            # Get text from current element
-                            current_text = current.get_text(strip=True)
-                            if current_text:
-                                all_text.append(current_text)
-                            
-                            # Also check children if this is a container
-                            for child in current.find_all(['div', 'p', 'span'], recursive=False):
-                                child_text = child.get_text(strip=True)
-                                if child_text and child_text not in all_text:
-                                    all_text.append(child_text)
-                            
-                            # Move to next sibling
-                            current = current.find_next_sibling()
-                            
-                            # Stop if we hit an element that likely indicates the end
-                            if current and any(p.lower() in current.get_text().lower() for p in end_patterns):
-                                break
-                    break
-            
-            if all_text:
-                combined_text = '\n'.join(all_text)
-                # Clean up the combined text
-                for pattern in end_patterns:
-                    if pattern in combined_text:
-                        combined_text = combined_text.split(pattern)[0]
-                return combined_text.strip()
-            
-            raise Exception("Could not find transcript content matching expected pattern")
-            
-        except Exception as e:
-            logger.error(f"Error extracting transcript: {str(e)}")
-            raise
+    # --- extract_transcript method removed ---

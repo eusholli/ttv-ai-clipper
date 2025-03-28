@@ -1,7 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react'; // Added useEffect
 import { useUser } from "@clerk/clerk-react";
 import { createJob } from '../api';
 import ButtonWithStatus from './ButtonWithStatus';
+
+// Basic YouTube URL validation regex
+const YOUTUBE_URL_REGEX = /^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]{11}.*$/;
+
+const isValidYoutubeUrl = (url) => {
+  return YOUTUBE_URL_REGEX.test(url.trim());
+};
 
 const JobForm = ({ onJobCreated, setError, getToken }) => {
   const { user } = useUser();
@@ -9,9 +16,39 @@ const JobForm = ({ onJobCreated, setError, getToken }) => {
   const [loadingState, setLoadingState] = useState({ loading: false, message: '' });
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
   const [autoApprove, setAutoApprove] = useState(false);
+  const [urlError, setUrlError] = useState(''); // Added state for URL validation error
+
+  // Validate URLs whenever the urls state changes
+  useEffect(() => {
+    const urlList = urls.split('\n').filter(url => url.trim() !== '');
+    if (urlList.length === 0) {
+      setUrlError(''); // No error if empty
+      return;
+    }
+    const invalidUrls = urlList.filter(url => !isValidYoutubeUrl(url));
+    if (invalidUrls.length > 0) {
+      setUrlError(`Invalid YouTube URL(s) detected: ${invalidUrls.join(', ')}. Please enter valid YouTube video URLs only.`);
+    } else {
+      setUrlError(''); // Clear error if all are valid
+    }
+  }, [urls]);
+
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    // --- Added URL Validation Check ---
+    if (urlError) {
+      setError(urlError); // Use existing setError prop
+      return; // Prevent submission if there's an error
+    }
+    const urlList = urls.split('\n').filter(url => url.trim() !== '');
+    if (urlList.length === 0) {
+        setError("Please enter at least one YouTube URL.");
+        return;
+    }
+    // --- End URL Validation Check ---
+
     setLoadingState({ loading: true, message: 'Initiating ingest...' });
     setError(null);
 
@@ -42,10 +79,14 @@ const JobForm = ({ onJobCreated, setError, getToken }) => {
           value={urls}
           onChange={(e) => setUrls(e.target.value)}
           required
-          placeholder="https://telecomtv.com/video-page-1&#10;https://telecomtv.com/video-page-2"
+          placeholder="https://www.youtube.com/watch?v=xxxxxxxxxxx&#10;https://youtu.be/yyyyyyyyyyy" // Updated placeholder
           rows={5}
           style={{ width: '100%', fontFamily: 'monospace' }}
+          aria-invalid={!!urlError} // Indicate invalid state for accessibility
+          aria-describedby="url-error"
         />
+        {/* Display URL validation error */}
+        {urlError && <p id="url-error" style={{ color: 'red', marginTop: '5px' }}>{urlError}</p>}
       </div>
 
       <div className="form-group">
@@ -73,7 +114,7 @@ const JobForm = ({ onJobCreated, setError, getToken }) => {
       <ButtonWithStatus
         type="submit"
         className="primary"
-        disabled={loadingState.loading || !rightsConfirmed}
+        disabled={loadingState.loading || !rightsConfirmed || !!urlError || urls.trim() === ''} // Disable if error, loading, rights not confirmed, or empty
         isLoading={loadingState.loading}
         loadingText={loadingState.message}
       >
