@@ -13,9 +13,13 @@
 - **FastAPI**: Python web framework
 - **Celery**: Distributed task queue
 - **Redis**: Message broker and caching
-- **PostgreSQL**: Primary database
+- **PostgreSQL**: Primary database (with pgvector extension)
 - **R2**: Cloud storage for video content
 - **Nginx**: Reverse proxy server
+- **Anthropic API (Claude 3 Haiku)**: Used for LLM-based query parsing and NER during ingestion.
+- **Hugging Face Transformers**: Used for sentiment analysis during ingestion (`cardiffnlp/twitter-roberta-base-sentiment-latest`).
+- **Instructor**: Library for structured output from LLMs.
+- **Sentence Transformers**: Used for generating text embeddings (`paraphrase-MiniLM-L3-v2`).
 
 ### Development Tools
 - **Docker**: Containerization
@@ -42,9 +46,11 @@
 2. Backend (.env):
    - Database connection strings
    - R2 storage credentials
-   - API keys and secrets
+   - API keys and secrets (including `ANTHROPIC_API_KEY`)
    - SMTP configuration
    - Stripe configuration
+   - `QUERY_PARSER_TYPE` (e.g., "anthropic")
+   - (Optional) `SENTIMENT_MODEL_NAME`, `NER_MODEL_NAME`
 
 ### Local Development
 1. Frontend:
@@ -99,8 +105,9 @@
 ### Infrastructure Limits
 - R2 storage quotas
 - Database connection limits
-- API rate limiting
-- Processing resource constraints
+- API rate limiting (including Anthropic API)
+- Processing resource constraints (including sentiment model execution)
+- LLM API costs and latency
 
 ## Deployment
 
@@ -116,6 +123,8 @@
    - Container deployment
    - Database management
    - Storage configuration
+   - Environment variable management (including `ANTHROPIC_API_KEY`)
+   - Network egress configuration (for accessing Anthropic API)
 
 2. Render:
    - Web service deployment

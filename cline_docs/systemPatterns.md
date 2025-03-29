@@ -41,16 +41,25 @@
 - Performance indexes for common queries
 - Separate job_transcripts table for large JSONB data
 - JSONB columns for flexible metadata storage
-- GiST and GIN indexes for efficient text search
+- GiST and GIN indexes for efficient text search and JSONB entity querying
 - IVFFlat index for vector similarity search
 - Trigger-based timestamp management
 - Workflow state constraints
 - Consistent retry mechanism with exponential backoff
+- Sentiment score and label columns for sentiment filtering
+- JSONB column for storing extracted named entities (NER)
 
 ### 6. Authentication & Authorization
 - Clerk for user authentication
 - Role-based access control
 - Admin-specific routes and functionality
+
+### 7. AI-Powered Search Pattern
+- **Query Understanding:** LLM (Anthropic Claude 3 Haiku via API) parses natural language queries into structured `ParsedQuery` objects (concepts, sentiment, entities, filters, relationships) using the `instructor` library. Abstraction layer (`QueryParser`) allows for future model changes.
+- **Data Enrichment (Ingestion):**
+    - **Sentiment Analysis:** Hugging Face Transformers (`cardiffnlp/twitter-roberta-base-sentiment-latest`) calculates sentiment scores/labels for each transcript segment.
+    - **Named Entity Recognition (NER):** LLM (Anthropic Claude 3 Haiku via API) extracts entities (PERSON, ORG, etc.) from each segment.
+- **Hybrid Search Logic:** Database query combines semantic search (vector similarity on concepts), full-text search (on original query), sentiment filtering (on scores), entity filtering (JSONB containment), and standard metadata filtering based on the `ParsedQuery`.
 
 ## Key Technical Decisions
 

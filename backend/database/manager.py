@@ -5,7 +5,7 @@ Centralizes all database operations and connection management.
 """
 
 import psycopg2
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, Json
 from psycopg2.pool import ThreadedConnectionPool
 from contextlib import contextmanager
 from functools import wraps
@@ -14,6 +14,10 @@ import logging
 import os
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional, Union, Tuple
+import json # For formatting JSONB query
+
+# Local import for type hint - requires careful handling or moving ParsedQuery
+# from backend.query_models import ParsedQuery
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -44,6 +48,8 @@ def with_retry(func):
                     logger.warning(f"Database operation failed, retrying in {delay}s: {str(e)}")
                     time.sleep(delay)
                     continue
+        # If all retries fail, raise the last encountered error
+        logger.error(f"Database operation failed after {MAX_RETRIES} attempts: {last_error}")
         raise last_error
     return wrapper
 
@@ -53,25 +59,25 @@ class DatabaseManager:
     Provides separate connection pools for read and write operations.
     """
     _instance = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(DatabaseManager, cls).__new__(cls)
             cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self):
         if self._initialized:
             return
-            
+
         load_dotenv()
-        
+
         # Initialize connection pools
         self._read_pool = self._create_read_pool()
         self._write_pool = self._create_write_pool()
-        
+
         self._initialized = True
-    
+
     def _create_read_pool(self):
         """Create a read-only connection pool"""
         # Check for required environment variables
@@ -79,10 +85,10 @@ class DatabaseManager:
         missing_vars = [var for var in required_vars if not os.getenv(var)]
         if missing_vars:
             raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
-            
+
         # Check if running in Cloud Run (INSTANCE_CONNECTION_NAME will be set)
         instance_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
-        
+
         if instance_connection_name:
             # Use Unix domain socket for Cloud SQL
             db_socket_dir = '/cloudsql'
@@ -110,10 +116,10 @@ class DatabaseManager:
                 'tcp_user_timeout': 5000,  # Reduced TCP timeout for faster failure detection
                 'application_name': 'ttv-ai-clipper-read'  # Identify application in database logs
             }
-            
+
         # Add read-only option to connection args
         connection_args['options'] = '-c default_transaction_read_only=on'
-        
+
         try:
             # Use optimized pool settings for read operations
             return ThreadedConnectionPool(
@@ -124,7 +130,7 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to initialize read connection pool: {str(e)}")
             raise
-    
+
     def _create_write_pool(self):
         """Create a write connection pool"""
         # Check for required environment variables
@@ -132,10 +138,10 @@ class DatabaseManager:
         missing_vars = [var for var in required_vars if not os.getenv(var)]
         if missing_vars:
             raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
-            
+
         # Check if running in Cloud Run (INSTANCE_CONNECTION_NAME will be set)
         instance_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
-        
+
         if instance_connection_name:
             # Use Unix domain socket for Cloud SQL
             db_socket_dir = '/cloudsql'
@@ -163,7 +169,7 @@ class DatabaseManager:
                 'tcp_user_timeout': 10000,  # TCP timeout in milliseconds
                 'application_name': 'ttv-ai-clipper-write'  # Identify application in database logs
             }
-            
+
         try:
             # Use optimized pool settings for write operations
             return ThreadedConnectionPool(
@@ -174,7 +180,7 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to initialize write connection pool: {str(e)}")
             raise
-    
+
     @contextmanager
     def get_read_conn(self):
         """Context manager for getting a read-only connection with proper isolation"""
@@ -189,11 +195,16 @@ class DatabaseManager:
             yield conn
         except Exception as e:
             logger.error(f"Database read connection error: {str(e)}")
+            # Ensure connection is returned even on error during setup
+            if conn is not None:
+                self._read_pool.putconn(conn)
             raise
         finally:
             if conn is not None:
+                # Ensure connection is returned after use
                 self._read_pool.putconn(conn)
-    
+
+
     @contextmanager
     def get_write_conn(self):
         """Context manager for getting a write connection with proper isolation"""
@@ -208,11 +219,15 @@ class DatabaseManager:
             yield conn
         except Exception as e:
             logger.error(f"Database write connection error: {str(e)}")
+            # Ensure connection is returned even on error during setup
+            if conn is not None:
+                self._write_pool.putconn(conn)
             raise
         finally:
             if conn is not None:
+                 # Ensure connection is returned after use
                 self._write_pool.putconn(conn)
-    
+
     def close_pools(self):
         """Close all connection pools"""
         if hasattr(self, '_read_pool') and self._read_pool:
@@ -222,51 +237,65 @@ class DatabaseManager:
             self._write_pool.closeall()
             self._write_pool = None
         logger.info("Database connection pools closed")
-    
+
     #
     # Transcript Search Operations
     #
-    
+
     @with_retry
-    def add_transcript_db(self, segment_hash, title, date, youtube_id, source, speaker, 
-                         company=None, start_time=None, end_time=None, duration=None, 
-                         subjects=None, download=None, text=None, embedding=None):
-        """Add a single transcript entry with all its metadata"""
+    def add_transcript_db(self, segment_hash, title, date, youtube_id, source, speaker,
+                         company=None, start_time=None, end_time=None, duration=None,
+                         subjects=None, download=None, text=None, embedding=None,
+                         sentiment_score=None, sentiment_label=None, entities=None):
+        """Add a single transcript entry with all its metadata, including sentiment and entities."""
         with self.get_write_conn() as conn:
             with conn.cursor() as cur:
                 try:
+                    # Ensure entities is a dict or None for JSONB insertion
+                    entities_json = Json(entities) if entities is not None else None
+
                     cur.execute('''
                         INSERT INTO transcripts (
                             segment_hash, title, date, youtube_id, source, speaker, company,
                             start_time, end_time, duration, subjects, download, text,
-                            text_vector, search_vector
+                            text_vector, search_vector,
+                            sentiment_score, sentiment_label, entities
                         )
                         VALUES (
                             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            to_tsvector('english', COALESCE(%s, '') || ' ' || 
-                                                 COALESCE(%s, '') || ' ' || 
+                            to_tsvector('english', COALESCE(%s, '') || ' ' ||
                                                  COALESCE(%s, '') || ' ' ||
-                                                 COALESCE(%s, ''))
+                                                 COALESCE(%s, '') || ' ' ||
+                                                 COALESCE(%s, '')),
+                            %s, %s, %s
                         )
                     ''', (
                         segment_hash, title, date, youtube_id, source, speaker, company,
                         start_time, end_time, duration, subjects, download, text,
                         embedding,
-                        title, speaker, company, text
+                        # ts_vector components
+                        title, speaker, company, text,
+                        # New fields
+                        sentiment_score, sentiment_label, entities_json
                     ))
                     conn.commit()
                 except Exception as e:
                     conn.rollback()
+                    logger.error(f"Error adding single transcript {segment_hash}: {e}")
                     raise e
-    
+
     @with_retry
-    def add_transcripts_batch_db(self, transcripts, embeddings):
-        """Batch insert multiple transcripts with their embeddings"""
+    def add_transcripts_batch_db(self, transcripts: List[Dict[str, Any]], embeddings: List[List[float]]):
+        """Batch insert multiple transcripts with embeddings, sentiment, and entities."""
         with self.get_write_conn() as conn:
             with conn.cursor() as cur:
                 # Prepare data for batch insert
                 data = []
                 for transcript, embedding in zip(transcripts, embeddings):
+                    # Ensure entities is suitable for JSONB
+                    entities_data = transcript.get('entities')
+                    entities_json = Json(entities_data) if entities_data is not None else None
+
                     data.append((
                         transcript['segment_hash'],
                         transcript['title'],
@@ -283,201 +312,298 @@ class DatabaseManager:
                         transcript['text'],
                         embedding,
                         # Concatenate fields for full-text search
-                        f"{transcript['title']} {transcript['speaker']} {transcript.get('company', '')} {transcript['text']}"
+                        f"{transcript.get('title', '')} {transcript.get('speaker', '')} {transcript.get('company', '')} {transcript.get('text', '')}",
+                        # New fields
+                        transcript.get('sentiment_score'),
+                        transcript.get('sentiment_label'),
+                        entities_json
                     ))
-                
+
                 try:
+                    # Note the updated template for new columns
                     execute_values(
                         cur,
                         '''
                         INSERT INTO transcripts (
                             segment_hash, title, date, youtube_id, source, speaker, company,
                             start_time, end_time, duration, subjects, download, text,
-                            text_vector, search_vector
+                            text_vector, search_vector,
+                            sentiment_score, sentiment_label, entities
                         )
                         VALUES %s
                         ''',
                         data,
-                        template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('english', %s))'''
+                        template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('english', %s), %s, %s, %s)'''
                     )
                     conn.commit()
                 except Exception as e:
                     conn.rollback()
+                    logger.error(f"Error adding batch transcripts: {e}")
                     raise e
-    
-    @with_retry
-    def hybrid_search_db(self, search_text, search_embedding, filters=None, semantic_weight=0.5, limit=10):
-        """Perform hybrid search combining semantic similarity, full-text search, and metadata filtering"""
-        # Initialize filters dict if None
-        if filters is None:
-            filters = {}
-            
-        # Build the query
-        query = '''
-            WITH combined_scores AS (
-                SELECT 
-                    segment_hash,
-                    title,
-                    date,
-                    youtube_id,
-                    source,
-                    speaker,
-                    company,
-                    start_time,
-                    end_time,
-                    duration,
-                    subjects,
-                    download,
-                    text,
-                    -- Combine semantic and full-text search scores
-                    (
-                        %s * (1 - (text_vector <=> %s::vector)) +
-                        %s * ts_rank_cd(search_vector, plainto_tsquery('english', %s))
-                    ) as similarity
-                FROM transcripts
-                WHERE 1=1
-        '''
-        
-        params = [
-            semantic_weight,
-            search_embedding,
-            1 - semantic_weight,
-            search_text
-        ]
-        
-        # Add filters if provided
-        if filters:
-            if 'date_range' in filters:
-                query += ' AND date BETWEEN %s AND %s'
-                params.extend([filters['date_range'][0], filters['date_range'][1]])
-            
-            # Handle speakers and companies with OR logic when both are present
-            if 'speakers' in filters and filters['speakers'] and 'companies' in filters and filters['companies']:
-                query += ' AND (speaker = ANY(%s) OR company = ANY(%s))'
-                params.extend([filters['speakers'], filters['companies']])
-            else:
-                # If only one filter is present, use normal AND logic
-                if 'speakers' in filters and filters['speakers']:
-                    query += ' AND speaker = ANY(%s)'
-                    params.append(filters['speakers'])
-                if 'companies' in filters and filters['companies']:
-                    query += ' AND company = ANY(%s)'
-                    params.append(filters['companies'])
 
-            if 'subjects' in filters and filters['subjects']:
-                query += ' AND subjects && ARRAY[%s]'
-                params.append(filters['subjects'])
-                        
-            if 'min_duration' in filters:
-                query += ' AND duration >= %s'
-                params.append(filters['min_duration'])
-            
-            if 'max_duration' in filters:
-                query += ' AND duration <= %s'
-                params.append(filters['max_duration'])
-                
-            if 'title' in filters and filters['title']:
-                query += ' AND title ILIKE %s'
-                params.append(f'%{filters["title"]}%')
-        
-        # Complete the query
-        query += '''
-            )
-            SELECT * FROM combined_scores
-            ORDER BY similarity DESC
-            LIMIT %s;
+    # <<< REVISED hybrid_search_db implementation >>>
+    @with_retry
+    def hybrid_search_db(self, parsed_query: 'ParsedQuery', search_embedding: List[float], semantic_weight: float = 0.5, limit: int = 10):
+        """
+        Perform hybrid search using parsed query details, combining semantic similarity,
+        full-text search, and enriched metadata filtering (sentiment, entities).
+        Handles filter-only searches separately.
+
+        Args:
+            parsed_query: The ParsedQuery object containing structured query details.
+            search_embedding: The embedding vector generated from the parsed concepts (used only if text search).
+            semantic_weight: Weight for semantic search score (0.0 to 1.0) (used only if text search).
+            limit: Maximum number of results.
+
+        Returns:
+            List of matching transcripts with similarity scores (if applicable).
+        """
+        # Import here to avoid circular dependency issues at module load time
+        from backend.query_models import ParsedQuery
+
+        # Determine if the search is text-based or filter-only
+        is_filter_only_search = not parsed_query.original_query or parsed_query.original_query.isspace()
+        logger.info(f"Hybrid search mode: {'Filter-only' if is_filter_only_search else 'Text-based'}")
+
+        # --- Build Query Components ---
+        select_columns = '''
+            segment_hash, title, date, youtube_id, source, speaker, company,
+            start_time, end_time, duration, subjects, download, text,
+            sentiment_score, sentiment_label, entities
         '''
+        from_clause = "FROM transcripts"
+        where_clauses = ["WHERE 1=1"] # Start with a base condition
+        params = []
+        order_by_clause = ""
+        similarity_calculation = ""
+
+        # --- Add Similarity Calculation and Params ONLY if search text exists ---
+        if not is_filter_only_search:
+            similarity_calculation = """,
+                (
+                    %s * (1 - (text_vector <=> %s::vector)) +
+                    %s * ts_rank_cd(search_vector, plainto_tsquery('english', %s))
+                ) as similarity
+            """
+            # Prepend similarity params - MUST match the order in the calculation
+            similarity_params = [
+                semantic_weight,
+                search_embedding,
+                1 - semantic_weight,
+                parsed_query.original_query # Use original query for full-text
+            ]
+            params = similarity_params + params # Add similarity params first
+            select_columns += similarity_calculation # Add similarity column to SELECT
+
+        # --- Add Filters based on Parsed Query (Metadata, Sentiment, Entities) ---
+        filters = parsed_query.filters # Filters merged in TranscriptSearch
+
+        # 1. Standard Metadata Filters (Speaker, Company, Date, Duration, Title, etc.)
+        if filters:
+            if 'date_range' in filters and filters['date_range'] and len(filters['date_range']) == 2:
+                where_clauses.append('date BETWEEN %s AND %s')
+                params.extend([filters['date_range'][0], filters['date_range'][1]])
+
+            speaker_filters = filters.get('speakers')
+            company_filters = filters.get('companies')
+
+            # Apply speaker/company filters to their dedicated columns
+            if speaker_filters and isinstance(speaker_filters, list) and speaker_filters:
+                 where_clauses.append('speaker = ANY(%s)')
+                 params.append(speaker_filters)
+            if company_filters and isinstance(company_filters, list) and company_filters:
+                 where_clauses.append('company = ANY(%s)')
+                 params.append(company_filters)
+
+            # Subjects filter (might be less relevant now)
+            if 'subjects' in filters and filters['subjects'] and isinstance(filters['subjects'], list):
+                where_clauses.append('subjects && %s::TEXT[]') # Use explicit cast
+                params.append(filters['subjects'])
+
+            if 'min_duration' in filters and filters['min_duration'] is not None:
+                try:
+                    where_clauses.append('duration >= %s')
+                    params.append(int(filters['min_duration']))
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid min_duration filter value: {filters['min_duration']}")
+
+            if 'max_duration' in filters and filters['max_duration'] is not None:
+                try:
+                    where_clauses.append('duration <= %s')
+                    params.append(int(filters['max_duration']))
+                except (ValueError, TypeError):
+                     logger.warning(f"Invalid max_duration filter value: {filters['max_duration']}")
+
+            if 'title' in filters and filters['title']:
+                where_clauses.append('title ILIKE %s')
+                params.append(f'%{filters["title"]}%')
+
+        # 2. Sentiment Filtering (based on parsed_query.sentiment_intent and sentiment_label column)
+        sentiment_intent = parsed_query.sentiment_intent
+        target_label = None
+        if sentiment_intent == "positive":
+            target_label = 'positive'
+        elif sentiment_intent == "negative":
+            target_label = 'negative'
+        elif sentiment_intent == "neutral":
+            target_label = 'neutral'
+        # For comparative intents, filter by label first, then order by score later
+        elif sentiment_intent == "happiest":
+            target_label = 'positive' # Filter for positive results first
+        elif sentiment_intent == "most_negative":
+            target_label = 'negative' # Filter for negative results first
+
+        if target_label:
+            where_clauses.append('sentiment_label = %s')
+            params.append(target_label)
+        # 'objective' and 'unclear' intents do not add sentiment filters by default
+
+        # 3. Entity Filtering (using JSONB @> operator based on parsed_query.entities)
+        # This checks if the indexed 'entities' JSONB contains the entities specified *in the query text*.
+        # This is separate from the explicit speaker/company filters above.
+        if parsed_query.entities:
+            for entity_type, entity_list in parsed_query.entities.items():
+                if entity_list and isinstance(entity_list, list): # Ensure it's a non-empty list
+                    # Construct the JSONB object string for the query for this specific type
+                    # Check if the entities column contains the specified entities
+                    jsonb_filter = json.dumps({entity_type: entity_list})
+                    where_clauses.append('entities @> %s::jsonb')
+                    params.append(jsonb_filter)
+
+        # 4. Relationship Filtering (Basic Example: Check if concepts appear in text using FTS)
+        # --- Apply ONLY if search text exists ---
+        if not is_filter_only_search and parsed_query.relationships:
+             # Example: "mentions X and Y" -> check if both X and Y are in text
+             related_concepts = parsed_query.search_concepts
+             if len(related_concepts) > 1 and " and " in parsed_query.relationships.lower(): # Basic check
+                 logger.info(f"Applying relationship filter for concepts: {related_concepts}")
+                 for concept in related_concepts:
+                     # Add a full-text condition for each concept
+                     where_clauses.append("search_vector @@ plainto_tsquery('english', %s)")
+                     params.append(concept)
+
+        # --- Determine Ordering ---
+        if not is_filter_only_search:
+            # Order by similarity if text search was performed
+            order_by_clause = "ORDER BY similarity DESC"
+            # Adjust for comparative sentiment intents (already filtered by label)
+            if sentiment_intent == "happiest":
+                # Order positive results by score descending (0-1 range), then similarity
+                order_by_clause = "ORDER BY sentiment_score DESC NULLS LAST, similarity DESC"
+            elif sentiment_intent == "most_negative":
+                 # Order negative results by score ascending (-1 to 0 range), then similarity
+                 order_by_clause = "ORDER BY sentiment_score ASC NULLS LAST, similarity DESC"
+        else:
+            # Default order for filter-only search (no similarity score available)
+            # Order by date descending, then start time ascending as a sensible default
+            order_by_clause = "ORDER BY date DESC NULLS LAST, start_time ASC NULLS LAST"
+
+        # --- Combine Query Parts ---
+        query = f"SELECT {select_columns}\n{from_clause}\n"
+        # Combine WHERE clauses with AND
+        if len(where_clauses) > 1:
+            query += " AND ".join(where_clauses[1:]) # Join clauses after the initial "WHERE 1=1"
+        else:
+            # If only "WHERE 1=1" exists, we don't need a WHERE clause unless we add more conditions later
+            # For safety, keep it simple: if no filters added, the WHERE 1=1 remains.
+            # If filters were added, the join above handles it.
+            pass # No additional clauses needed if only WHERE 1=1
+
+        query += f"\n{order_by_clause}"
+        query += "\nLIMIT %s;"
         params.append(limit)
-        
+
+        logger.debug(f"Executing hybrid search query: {query}")
+        # Avoid logging potentially sensitive embeddings/params if necessary
+        # logger.debug(f"Query parameters: {params}")
+
         # Execute search
         with self.get_read_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, params)
                 results = cur.fetchall()
-        
-        # Format results
+
+        # --- Result Formatting ---
+        # Define base column names
+        column_names = [
+            'segment_hash', 'title', 'date', 'youtube_id', 'source', 'speaker', 'company',
+            'start_time', 'end_time', 'duration', 'subjects', 'download', 'text',
+            'sentiment_score', 'sentiment_label', 'entities'
+        ]
+        # Add 'similarity' column name ONLY if it was calculated
+        if not is_filter_only_search:
+            column_names.append('similarity')
+
         formatted_results = []
-        for row in results:
-            formatted_results.append({
-                'segment_hash': row[0],
-                'title': row[1],
-                'date': row[2],
-                'youtube_id': row[3],
-                'source': row[4],
-                'speaker': row[5],
-                'company': row[6],
-                'start_time': row[7],
-                'end_time': row[8],
-                'duration': row[9],
-                'subjects': row[10],
-                'download': row[11],
-                'text': row[12],
-                'similarity': row[13]
-            })
-        
+        # Check if the number of columns matches fetchall result
+        if results and len(results[0]) != len(column_names):
+             logger.error(f"Column name count ({len(column_names)}) does not match fetched data count ({len(results[0])}). Check SELECT statement and conditional 'similarity'.")
+             # Fallback or raise error - basic formatting for now
+             formatted_results = [list(row) for row in results] # Return raw rows on mismatch
+        else:
+            for row in results:
+                formatted_results.append(dict(zip(column_names, row)))
+
         return formatted_results
-    
+    # <<< END REVISED hybrid_search_db implementation >>>
+
     @with_retry
     def get_metadata_by_hash_db(self, segment_hash):
-        """Get metadata for a specific segment by its hash"""
+        """Get metadata for a specific segment by its hash, including new fields."""
         with self.get_read_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
-                    SELECT 
+                    SELECT
                         segment_hash, title, date, youtube_id, source, speaker, company,
-                        start_time, end_time, duration, subjects, download, text
-                    FROM transcripts 
+                        start_time, end_time, duration, subjects, download, text,
+                        sentiment_score, sentiment_label, entities
+                    FROM transcripts
                     WHERE segment_hash = %s
                 ''', (segment_hash,))
-                
+
                 result = cur.fetchone()
-        
+
         if result:
-            return {
-                'segment_hash': result[0],
-                'title': result[1],
-                'date': result[2],
-                'youtube_id': result[3],
-                'source': result[4],
-                'speaker': result[5],
-                'company': result[6],
-                'start_time': result[7],
-                'end_time': result[8],
-                'duration': result[9],
-                'subjects': result[10],
-                'download': result[11],
-                'text': result[12]
-            }
+            # Map results to a dictionary including new fields
+            column_names = [
+                'segment_hash', 'title', 'date', 'youtube_id', 'source', 'speaker', 'company',
+                'start_time', 'end_time', 'duration', 'subjects', 'download', 'text',
+                'sentiment_score', 'sentiment_label', 'entities'
+            ]
+            return dict(zip(column_names, result))
         return None
-    
+
     @with_retry
     def get_available_filters_db(self):
         """Fetch and store unique values for each filterable field from the database"""
+        # This might need adjustment if 'subjects' becomes less relevant
         with self.get_read_conn() as conn:
             with conn.cursor() as cur:
                 # Get unique speakers
-                cur.execute('SELECT DISTINCT speaker FROM transcripts ORDER BY speaker')
+                cur.execute('SELECT DISTINCT speaker FROM transcripts WHERE speaker IS NOT NULL ORDER BY speaker')
                 speakers = [row[0] for row in cur.fetchall()]
 
                 # Get unique dates and format them
                 cur.execute('''
-                    SELECT DISTINCT date::date 
-                    FROM transcripts 
+                    SELECT DISTINCT date::date
+                    FROM transcripts
+                    WHERE date IS NOT NULL
                     ORDER BY date DESC
                 ''')
-                dates = [row[0].strftime("%b %d, %Y") for row in cur.fetchall()]
+                # Use ISO format for consistency, frontend can format
+                dates = [row[0].isoformat() for row in cur.fetchall()]
 
                 # Get unique titles
-                cur.execute('SELECT DISTINCT title FROM transcripts ORDER BY title')
+                cur.execute('SELECT DISTINCT title FROM transcripts WHERE title IS NOT NULL ORDER BY title')
                 titles = [row[0] for row in cur.fetchall()]
 
                 # Get unique companies
-                cur.execute('SELECT DISTINCT company FROM transcripts ORDER BY company')
-                companies = [row[0] for row in cur.fetchall() if row[0] is not None]
+                cur.execute('SELECT DISTINCT company FROM transcripts WHERE company IS NOT NULL ORDER BY company')
+                companies = [row[0] for row in cur.fetchall()]
 
-                # Get unique subjects
-                cur.execute('SELECT DISTINCT unnest(subjects) FROM transcripts ORDER BY 1')
-                subjects = [row[0] for row in cur.fetchall() if row[0] is not None]
+                # Get unique subjects (consider deprecating if not used)
+                cur.execute('SELECT DISTINCT unnest(subjects) FROM transcripts WHERE subjects IS NOT NULL ORDER BY 1')
+                subjects = [row[0] for row in cur.fetchall()]
 
                 return {
                     "speakers": speakers,
@@ -486,11 +612,11 @@ class DatabaseManager:
                     "companies": companies,
                     "subjects": subjects
                 }
-    
+
     #
     # Job Management Operations
     #
-    
+
     @with_retry
     def create_job_db(self, url, user_email, status='pending'):
         """Create a new ingest job"""
@@ -501,12 +627,12 @@ class DatabaseManager:
                     VALUES (%s, %s, %s)
                     RETURNING id, url, status, created_at, started_at, completed_at, error_message, user_email, detailed_workflow_state
                 ''', (url, status, user_email))
-                
+
                 conn.commit()
                 row = cur.fetchone()
-        
+
         return row
-    
+
     @with_retry
     def get_job_db(self, job_id):
         """Get job by ID"""
@@ -517,9 +643,9 @@ class DatabaseManager:
                     FROM ingest_jobs
                     WHERE id = %s
                 ''', (job_id,))
-                
+
                 return cur.fetchone()
-    
+
     @with_retry
     def list_jobs_db(self, user_email=None, limit=100):
         """List jobs with optional filtering by user"""
@@ -528,42 +654,40 @@ class DatabaseManager:
             FROM ingest_jobs
         '''
         params = []
-        
+
         if user_email:
             query += ' WHERE user_email = %s'
             params.append(user_email)
-            
+
         query += ' ORDER BY created_at DESC LIMIT %s'
         params.append(limit)
-        
+
         with self.get_read_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, params)
                 return cur.fetchall()
-    
+
     @with_retry
     def update_job_status_db(self, job_id, status, error_message=None):
         """Update job status and timestamps"""
         with self.get_write_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
-                    UPDATE ingest_jobs 
+                    UPDATE ingest_jobs
                     SET status = %s,
                         error_message = COALESCE(%s, error_message),
-                        started_at = CASE 
-                            WHEN status = %s AND started_at IS NULL THEN CURRENT_TIMESTAMP
+                        started_at = CASE
+                            WHEN %s = 'running' AND started_at IS NULL THEN CURRENT_TIMESTAMP
                             ELSE started_at
                         END,
-                        completed_at = CASE 
-                            WHEN status IN (%s, %s, %s) THEN CURRENT_TIMESTAMP
+                        completed_at = CASE
+                            WHEN %s IN ('completed', 'failed', 'deleted') THEN CURRENT_TIMESTAMP
                             ELSE completed_at
                         END
                     WHERE id = %s
-                ''', (status, error_message, 'running', 
-                      'completed', 'failed', 'deleted', 
-                      job_id))
+                ''', (status, error_message, status, status, job_id)) # Pass status multiple times
                 conn.commit()
-    
+
     @with_retry
     def get_job_log_db(self, job_id):
         """Get the log file content for a job"""
@@ -572,14 +696,14 @@ class DatabaseManager:
                 cur.execute('SELECT last_log_file FROM ingest_jobs WHERE id = %s', (job_id,))
                 result = cur.fetchone()
                 return result[0] if result and result[0] else ""
-    
+
     @with_retry
     def update_log_file_db(self, job_id, log_content):
         """Update the log file content for a job"""
         with self.get_write_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
-                    UPDATE ingest_jobs 
+                    UPDATE ingest_jobs
                     SET last_log_file = %s
                     WHERE id = %s
                 ''', (log_content, job_id))
@@ -591,23 +715,23 @@ class DatabaseManager:
         with self.get_read_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
-                    SELECT id, metadata->>'youtube_id' as youtube_id 
-                    FROM ingest_jobs 
+                    SELECT id, metadata->>'youtube_id' as youtube_id
+                    FROM ingest_jobs
                     WHERE status IN ('completed', 'failed', 'deleted')
                 ''')
                 return cur.fetchall()
-    
+
     #
     # Workflow Operations
     #
-    
+
     @with_retry
     def get_job_details_db(self, job_id):
         """Get detailed job information including metadata and transcript"""
         with self.get_read_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
-                    SELECT 
+                    SELECT
                         i.status,
                         i.workflow_state,
                         i.detailed_workflow_state,
@@ -621,14 +745,14 @@ class DatabaseManager:
                     WHERE i.id = %s
                 ''', (job_id,))
                 result = cur.fetchone()
-                
+
                 if not result:
                     raise ValueError(f"Job {job_id} not found")
-                
-                (status, workflow_state, detailed_workflow_state, 
-                 html_fetch_success, video_fetch_success, error_message, 
+
+                (status, workflow_state, detailed_workflow_state,
+                 html_fetch_success, video_fetch_success, error_message,
                  parsing_status, metadata, raw_transcript) = result
-                
+
                 return {
                     "metadata": metadata or {},
                     "raw_transcript": raw_transcript or "",
@@ -643,7 +767,7 @@ class DatabaseManager:
                         "parsing_status": parsing_status if parsing_status else {"success": False, "error": ""}
                     }
                 }
-    
+
     @with_retry
     def update_workflow_state_db(self, job_id, state, error_message=None):
         """Update job workflow state"""
@@ -653,67 +777,70 @@ class DatabaseManager:
                 cur.execute('SELECT workflow_state FROM ingest_jobs WHERE id = %s', (job_id,))
                 result = cur.fetchone()
                 prev_state = result[0] if result else None
-                
+
                 # Update state
                 cur.execute('''
-                    UPDATE ingest_jobs 
+                    UPDATE ingest_jobs
                     SET workflow_state = %s,
                         detailed_workflow_state = %s,
                         error_message = COALESCE(%s, error_message)
                     WHERE id = %s
                 ''', (state, state, error_message, job_id))
                 conn.commit()
-                
+
         return prev_state
-    
+
     @with_retry
     def update_content_db(self, job_id, content):
         """Update transcript content in ingest_jobs and job_transcripts"""
         with self.get_read_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
-                    SELECT i.metadata, i.raw_transcript, jt.transcript 
-                    FROM ingest_jobs i 
-                    LEFT JOIN job_transcripts jt ON i.id = jt.job_id 
+                    SELECT i.metadata, i.raw_transcript, jt.transcript
+                    FROM ingest_jobs i
+                    LEFT JOIN job_transcripts jt ON i.id = jt.job_id
                     WHERE i.id = %s
                 ''', (job_id,))
                 result = cur.fetchone()
                 existing_metadata = result[0] if result and result[0] else {}
                 existing_raw = result[1] if result and result[1] else ""
                 existing_transcript = result[2] if result and result[2] else {}
-        
+
         # Create updated content
         updated_metadata = content.get("metadata", existing_metadata)
         updated_raw_transcript = content.get("raw_transcript", existing_raw)
+        # Ensure 'transcript' key exists in updated_transcript
+        updated_transcript_data = content.get("transcript", existing_transcript.get("transcript", []))
         updated_transcript = {
             "metadata": updated_metadata,
             "raw_transcript": updated_raw_transcript,
-            "transcript": content.get("transcript", existing_transcript.get("transcript", []))
+            "transcript": updated_transcript_data
         }
-        
+
+
         with self.get_write_conn() as conn:
             with conn.cursor() as cur:
                 # Update metadata and raw_transcript in ingest_jobs
                 cur.execute('''
-                    UPDATE ingest_jobs 
+                    UPDATE ingest_jobs
                     SET metadata = %s::jsonb,
                         raw_transcript = %s,
                         transcript_edited_at = CURRENT_TIMESTAMP
                     WHERE id = %s
-                ''', (psycopg2.extras.Json(updated_metadata), updated_raw_transcript, job_id))
+                ''', (Json(updated_metadata), updated_raw_transcript, job_id))
 
                 # Update or insert full transcript in job_transcripts
                 cur.execute('''
                     INSERT INTO job_transcripts (job_id, transcript)
                     VALUES (%s, %s::jsonb)
-                    ON CONFLICT (job_id) 
+                    ON CONFLICT (job_id)
                     DO UPDATE SET transcript = EXCLUDED.transcript
-                ''', (job_id, psycopg2.extras.Json(updated_transcript)))
-                
+                ''', (job_id, Json(updated_transcript)))
+
                 conn.commit()
-        
+
         return updated_transcript
-    
+
     @with_retry
     def delete_job_content_db(self, job_id, youtube_id):
         """Delete all content related to a job including database entries"""
@@ -735,19 +862,20 @@ class DatabaseManager:
                     deleted_job_transcript_rows = cur.rowcount
 
                     # Clear all related columns in ingest_jobs except state-related and user columns
-                    cur.execute('''
-                        UPDATE ingest_jobs 
-                        SET metadata = NULL,
-                            raw_transcript = NULL,
-                            parsing_status = NULL,
-                            html_fetch_success = NULL,
-                            video_fetch_success = NULL,
-                            error_message = NULL,
-                            transcript_edited_at = NULL
-                        WHERE id = %s
-                    ''', (job_id,))
-                    cleared_job_rows = cur.rowcount
-                    
+                    # Update: Changed to DELETE the job entirely after clearing related content
+                    # cur.execute('''
+                    #     UPDATE ingest_jobs
+                    #     SET metadata = NULL,
+                    #         raw_transcript = NULL,
+                    #         parsing_status = NULL,
+                    #         html_fetch_success = NULL,
+                    #         video_fetch_success = NULL,
+                    #         error_message = NULL,
+                    #         transcript_edited_at = NULL
+                    #     WHERE id = %s
+                    # ''', (job_id,))
+                    # cleared_job_rows = cur.rowcount
+
                     # Also delete the main job entry itself
                     cur.execute(
                         'DELETE FROM ingest_jobs WHERE id = %s',
@@ -756,14 +884,14 @@ class DatabaseManager:
                     deleted_ingest_job_rows = cur.rowcount
 
                     conn.commit()
-                    
+
                     return {
                         "deleted_transcript_rows": deleted_transcript_rows,
                         "deleted_job_transcript_rows": deleted_job_transcript_rows,
-                        "cleared_job_rows": cleared_job_rows, # This is now effectively 0 as the row is deleted
+                        # "cleared_job_rows": cleared_job_rows, # Removed as job is deleted
                         "deleted_ingest_job_rows": deleted_ingest_job_rows
                     }
-                    
+
                 except Exception as e:
                     conn.rollback()
                     raise e
@@ -771,7 +899,7 @@ class DatabaseManager:
     @with_retry
     def delete_content_archive_db(self):
         """
-        DEPRECATED: This method is complex and doesn't handle R2. 
+        DEPRECATED: This method is complex and doesn't handle R2.
         Use get_archivable_jobs_db and delete_job_content_db instead.
         Original logic kept for reference but should not be used.
         """
@@ -784,19 +912,19 @@ class DatabaseManager:
             "deleted_jobs_count": 0,
             "processed_jobs": []
         }
-        
+
         # --- Start of Original Logic (kept for reference, but inactive) ---
         # with self.get_write_conn() as conn:
         #     with conn.cursor() as cur:
         #         # Find all inactive jobs
         #         cur.execute('''
-        #             SELECT id, metadata->>'youtube_id' as youtube_id 
-        #             FROM ingest_jobs 
+        #             SELECT id, metadata->>'youtube_id' as youtube_id
+        #             FROM ingest_jobs
         #             WHERE status IN ('completed', 'failed')
         #             FOR UPDATE
         #         ''')
         #         inactive_jobs = cur.fetchall()
-                
+
         #         results = []
         #         # Delete content for each inactive job
         #         for job_id, youtube_id in inactive_jobs:
@@ -817,7 +945,7 @@ class DatabaseManager:
 
         #                 # Clear all related columns in ingest_jobs except state-related and user columns
         #                 cur.execute('''
-        #                     UPDATE ingest_jobs 
+        #                     UPDATE ingest_jobs
         #                     SET metadata = NULL,
         #                         raw_transcript = NULL,
         #                         parsing_status = NULL,
@@ -828,7 +956,7 @@ class DatabaseManager:
         #                     WHERE id = %s
         #                 ''', (job_id,))
         #                 cleared_job_rows = cur.rowcount
-                        
+
         #                 results.append({
         #                     "job_id": job_id,
         #                     "youtube_id": youtube_id,
@@ -838,15 +966,15 @@ class DatabaseManager:
         #                 })
         #             except Exception as e:
         #                 logger.error(f"Failed to delete content for job {job_id}: {str(e)}")
-                
+
         #         # Delete all deleted jobs
         #         cur.execute(
         #             'DELETE FROM ingest_jobs WHERE status = %s', ['deleted']
         #         )
         #         deleted_jobs_count = cur.rowcount
-                
+
         #         conn.commit()
-                
+
         #         return {
         #             "deleted_jobs_count": deleted_jobs_count,
         #             "processed_jobs": results
@@ -859,8 +987,8 @@ class DatabaseManager:
         with self.get_write_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
-                    UPDATE ingest_jobs 
+                    UPDATE ingest_jobs
                     SET parsing_status = %s::jsonb
                     WHERE id = %s
-                ''', (psycopg2.extras.Json(parsing_status), job_id))
+                ''', (Json(parsing_status), job_id))
                 conn.commit()

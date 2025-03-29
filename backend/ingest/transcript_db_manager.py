@@ -1,46 +1,95 @@
 import hashlib
+import os
+import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+import json # Import json for parsing
 
+# Third-party imports for AI processing
+# Removed instructor import
+import anthropic
+from transformers import pipeline, logging as hf_logging
+from pydantic import BaseModel, Field
+import psycopg2.extras # For Json adapter
+
+# Local imports
 from .constants import MIN_DURATION
-
 from .logging_setup import logger
 from .models import TranscriptSegment, Transcript
-from backend.transcript_search import TranscriptSearch
+from backend.transcript_search import TranscriptSearch # Keep for get_segment_hash? Or move hash?
 from backend.database.manager import DatabaseManager
 from backend.job_manager import JobManager
 from backend.r2_manager import R2Manager
 
+# Suppress verbose Hugging Face logging
+hf_logging.set_verbosity_error()
+
+# --- Pydantic Model for NER Output ---
+class ExtractedEntities(BaseModel):
+    """Structure for entities extracted by LLM."""
+    entities: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Named entities extracted from the text, categorized by type (e.g., {'PERSON': ['John Smith'], 'ORG': ['Tech Corp']})."
+    )
+
 class TranscriptDbManager:
-    """Handles database operations for transcripts"""
+    """Handles database operations for transcripts, including enrichment."""
 
     def __init__(self):
-        self.search = TranscriptSearch()
         self.db_manager = DatabaseManager()
         self.job_manager = JobManager()
         self.r2_manager = R2Manager()
+        self.ner_model_name = os.getenv("NER_MODEL_NAME", "claude-3-haiku-20240307")
+        self.sentiment_model_name = os.getenv("SENTIMENT_MODEL_NAME", "cardiffnlp/twitter-roberta-base-sentiment-latest")
+
+        # Initialize Sentiment Pipeline (Lazy load might be better in Celery context)
+        try:
+            logger.info(f"Loading sentiment model: {self.sentiment_model_name}")
+            # Using device=-1 forces CPU, might be safer in diverse deployment environments
+            # unless GPU is guaranteed and configured.
+            self.sentiment_pipeline = pipeline("sentiment-analysis", model=self.sentiment_model_name, device=-1)
+            logger.info("Sentiment model loaded successfully.")
+        except Exception as e:
+            logger.error(f"Failed to load sentiment model '{self.sentiment_model_name}': {e}", exc_info=True)
+            self.sentiment_pipeline = None # Allow processing to continue without sentiment
+
+        # Initialize Anthropic Client for NER
+        self.anthropic_client = None
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if api_key:
+            try:
+                logger.info(f"Initializing Anthropic client for NER with model: {self.ner_model_name}")
+                # Initialize the standard Anthropic client directly
+                self.anthropic_client = anthropic.Anthropic(api_key=api_key) # Keep standard client
+                logger.info("Anthropic client initialized successfully (standard client, no instructor).") # Update log message
+            except Exception as e:
+                logger.error(f"Failed to initialize Anthropic client: {e}", exc_info=True)
+                self.anthropic_client = None # Allow processing to continue without NER
+        else:
+            logger.warning("ANTHROPIC_API_KEY not set. NER processing will be skipped.")
 
     def process_transcript(self, transcript_obj: Transcript) -> None:
         """Process and store transcript data"""
+        # This method seems correct from previous checks, keeping it as is.
         try:
             youtube_id = transcript_obj.metadata.get('youtube_id')
-            
+
             if youtube_id:
                 logger.info(f"Deleting existing entries for YouTube ID: {youtube_id}")
                 with self.db_manager.get_write_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute('DELETE FROM transcripts WHERE youtube_id = %s', (youtube_id,))
                         conn.commit()
-                
+
                 # Mark associated jobs as deleted
                 logger.info(f"Marking jobs as deleted for YouTube ID: {youtube_id}")
                 self.job_manager.mark_job_deleted(youtube_id)
-            
+
             new_count = 0
             skipped = 0
-            
+
             logger.info(f"Processing transcript with {len(transcript_obj.transcript)} segments...")
-            
+
             # Parse date string to datetime object if exists
             date_str = transcript_obj.metadata.get('date', '')
             date = None
@@ -61,19 +110,20 @@ class TranscriptDbManager:
 
             # Prepare batch data
             batch_data = []
-            
+
             for segment in transcript_obj.transcript:
                 segment_hash = self.get_segment_hash(segment, transcript_obj.metadata)
                 start_time = int(segment.metadata['start_timestamp'])
                 end_time = int(segment.metadata['end_timestamp'])
                 duration = end_time - start_time
-                
+
                 # Skip segments less than MIN_DURATION seconds
                 if duration < MIN_DURATION:
-                    logger.info(f"Skipping segment \"{segment['text']}\"; shorter than {MIN_DURATION} seconds (duration: {duration}s)")
+                    logger.info(f"Skipping segment \"{segment.text}\"; shorter than {MIN_DURATION} seconds (duration: {duration}s)")
                     continue
-                
-                batch_data.append({
+
+                # Create the item dictionary first
+                item = {
                     'segment_hash': segment_hash,
                     'text': segment.text,
                     'title': transcript_obj.metadata.get('title', ''),
@@ -85,36 +135,52 @@ class TranscriptDbManager:
                     'start_time': start_time,
                     'end_time': end_time,
                     'duration': end_time - start_time,
-                    'subjects': segment.metadata['subjects'],
-                    'download': segment.metadata['download']
-                })
-            
+                    'subjects': segment.metadata.get('subjects'), # Use .get for safety
+                    'download': segment.metadata.get('download') # Use .get for safety
+                }
+
+                # --- Add Sentiment and NER ---
+                sentiment_result = self._analyze_sentiment(item['text']) # Use item['text']
+                ner_result = self._extract_entities(segment.text) # Use segment.text here as item['text'] is the same
+                item['sentiment_score'] = sentiment_result['score']
+                item['sentiment_label'] = sentiment_result['label']
+                item['entities'] = ner_result # This is already a dict or None
+
+                # Append the enriched item ONCE
+                batch_data.append(item)
+            # -----------------------------
+
             try:
                 # Use the database manager to add transcripts
                 with self.db_manager.get_write_conn() as conn:
                     with conn.cursor() as cur:
                         # Prepare data for batch insert
                         data = []
-                        for item in batch_data:
+                        for item_to_insert in batch_data: # Use different loop var name
+                            entities_json = psycopg2.extras.Json(item_to_insert['entities']) if item_to_insert['entities'] is not None else None
                             data.append((
-                                item['segment_hash'],
-                                item['title'],
-                                item['date'],
-                                item['youtube_id'],
-                                item['source'],
-                                item['speaker'],
-                                item.get('company'),
-                                item.get('start_time'),
-                                item.get('end_time'),
-                                item.get('duration'),
-                                item.get('subjects'),
-                                item.get('download'),
-                                item['text'],
-                                None,  # text_vector will be computed by the database
+                                item_to_insert['segment_hash'],
+                                item_to_insert['title'],
+                                item_to_insert['date'],
+                                item_to_insert['youtube_id'],
+                                item_to_insert['source'],
+                                item_to_insert['speaker'],
+                                item_to_insert.get('company'),
+                                item_to_insert.get('start_time'),
+                                item_to_insert.get('end_time'),
+                                item_to_insert.get('duration'),
+                                item_to_insert.get('subjects'),
+                                item_to_insert.get('download'),
+                                item_to_insert['text'],
+                                None,  # text_vector placeholder
                                 # Concatenate fields for full-text search
-                                f"{item['title']} {item['speaker']} {item.get('company', '')} {item['text']}"
+                                f"{item_to_insert.get('title', '')} {item_to_insert.get('speaker', '')} {item_to_insert.get('company', '')} {item_to_insert.get('text', '')}",
+                                # New fields
+                                item_to_insert.get('sentiment_score'),
+                                item_to_insert.get('sentiment_label'),
+                                entities_json
                             ))
-                        
+
                         # Execute batch insert
                         from psycopg2.extras import execute_values
                         execute_values(
@@ -123,75 +189,96 @@ class TranscriptDbManager:
                             INSERT INTO transcripts (
                                 segment_hash, title, date, youtube_id, source, speaker, company,
                                 start_time, end_time, duration, subjects, download, text,
-                                text_vector, search_vector
+                                text_vector, search_vector,
+                                sentiment_score, sentiment_label, entities
                             )
                             VALUES %s
                             ''',
                             data,
-                            # Use %s for text_vector placeholder instead of NULL literal
-                            template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_tsvector('english', %s))'''
+                            # Updated template for new columns
+                            template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_tsvector('english', %s), %s, %s, %s)'''
                         )
                         conn.commit()
                         new_count = len(batch_data)
             except Exception as e:
-                if "duplicate key value" in str(e):
+                logger.warning(f"Batch insert failed: {e}. Falling back to individual inserts.")
+                if "duplicate key value" in str(e): # Check if it's specifically a duplicate key error
                     # If we hit duplicates, fall back to individual inserts
                     new_count = 0
                     skipped = 0
-                    for item in batch_data:
-                        try:
+                    for item_fallback in batch_data: # Use different loop var name
+                        # --- Add Sentiment and NER data to fallback insert ---
+                        # Already enriched in batch_data, just access it
+                        # ----------------------------------------------------
+                        entities_json_fallback = psycopg2.extras.Json(item_fallback['entities']) if item_fallback['entities'] is not None else None
+
+                        try: # Indent try block correctly within the loop
                             with self.db_manager.get_write_conn() as conn:
                                 with conn.cursor() as cur:
                                     cur.execute('''
                                         INSERT INTO transcripts (
                                             segment_hash, title, date, youtube_id, source, speaker, company,
-                                            start_time, end_time, duration, subjects, download, text,
-                                            search_vector
-                                        )
-                                        VALUES (
-                                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                            to_tsvector('english', COALESCE(%s, '') || ' ' || 
-                                                                 COALESCE(%s, '') || ' ' || 
-                                                                 COALESCE(%s, '') || ' ' ||
-                                                                 COALESCE(%s, ''))
-                                        )
-                                    ''', (
-                                        item['segment_hash'], 
-                                        item['title'], 
-                                        item['date'], 
-                                        item['youtube_id'], 
-                                        item['source'], 
-                                        item['speaker'], 
-                                        item.get('company'),
-                                        item.get('start_time'), 
-                                        item.get('end_time'), 
-                                        item.get('duration'), 
-                                        item.get('subjects'), 
-                                        item.get('download'), 
-                                        item['text'],
-                                        item['title'], 
-                                        item['speaker'], 
-                                        item.get('company', ''), 
-                                        item['text']
-                                    ))
+                                                start_time, end_time, duration, subjects, download, text,
+                                                search_vector, sentiment_score, sentiment_label, entities
+                                            )
+                                            VALUES (
+                                                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                                to_tsvector('english', COALESCE(%s, '') || ' ' ||
+                                                                     COALESCE(%s, '') || ' ' ||
+                                                                     COALESCE(%s, '') || ' ' ||
+                                                                     COALESCE(%s, '')),
+                                                %s, %s, %s
+                                            )
+                                        ''', (
+                                            item_fallback['segment_hash'],
+                                            item_fallback['title'],
+                                            item_fallback['date'],
+                                            item_fallback['youtube_id'],
+                                            item_fallback['source'],
+                                            item_fallback['speaker'],
+                                            item_fallback.get('company'),
+                                            item_fallback.get('start_time'),
+                                            item_fallback.get('end_time'),
+                                            item_fallback.get('duration'),
+                                            item_fallback.get('subjects'),
+                                            item_fallback.get('download'),
+                                            item_fallback['text'],
+                                            item_fallback['title'],
+                                            item_fallback['speaker'],
+                                            item_fallback.get('company', ''),
+                                            item_fallback['text'],
+                                            # New fields for fallback
+                                            item_fallback.get('sentiment_score'),
+                                            item_fallback.get('sentiment_label'),
+                                            entities_json_fallback
+                                        )) # Ensure closing parenthesis for tuple is here
                                     conn.commit()
                             new_count += 1
-                        except Exception as e2:
-                            if "duplicate key value" in str(e2):
-                                skipped += 1
-                                logger.info(f"Skipping duplicate segment: {item['segment_hash']}")
-                            else:
-                                raise e2
+                        except psycopg2.errors.UniqueViolation: # Indent except clauses correctly
+                            skipped += 1
+                            logger.info(f"Skipping duplicate segment during fallback: {item_fallback['segment_hash']}")
+                            # No need to rollback here, UniqueViolation doesn't keep transaction open
+                        except Exception as e2: # Indent except clauses correctly
+                            logger.error(f"Error inserting individual segment {item_fallback['segment_hash']} during fallback: {e2}")
+                            # Attempt rollback just in case the connection state is uncertain
+                            try:
+                                conn.rollback()
+                            except Exception as rb_err:
+                                logger.error(f"Error during rollback after insert error: {rb_err}")
+                            # Decide whether to raise e2 or just log and continue
+                            # For robustness, log and continue might be better here
+                            # raise e2
                 else:
                     raise e
-            
+
             logger.info(f"Added {new_count} new transcript segments")
             logger.info(f"Skipped {skipped} existing segments")
-            
+
         except Exception as e:
             logger.error(f"Error processing transcript: {str(e)}")
             raise
 
+    # <<< CORRECTED update_transcripts method >>>
     async def update_transcripts(self, info: Transcript) -> None:
         """Update transcripts table by comparing new entries with existing ones"""
         try:
@@ -204,16 +291,16 @@ class TranscriptDbManager:
                 with conn.cursor() as cur:
                     cur.execute('''
                         SELECT speaker, company, text, start_time, end_time, download
-                        FROM transcripts 
+                        FROM transcripts
                         WHERE youtube_id = %s
                     ''', (youtube_id,))
                     existing_entries = cur.fetchall()
 
             # Convert existing entries to set of tuples for comparison
             existing_set = {(e[0], e[1], e[2], e[3], e[4], e[5]) for e in existing_entries}
-            
+
             # Convert new entries to comparable format and track which to keep
-            new_entries = []
+            new_entries_segments = [] # Store segment objects to add
             for segment in info.transcript:
                 entry_tuple = (
                     segment.metadata['speaker'],
@@ -224,7 +311,7 @@ class TranscriptDbManager:
                     segment.metadata['download']
                 )
                 if entry_tuple not in existing_set:
-                    new_entries.append(segment)
+                    new_entries_segments.append(segment)
                 else:
                     # Remove from existing set if found in new entries
                     existing_set.remove(entry_tuple)
@@ -247,25 +334,26 @@ class TranscriptDbManager:
                         for entry in existing_set:
                             delete_conditions.append("(start_time = %s AND end_time = %s)")
                             delete_params.extend([entry[3], entry[4]])
-                        
+
                         # Combine all conditions with OR and add youtube_id check
                         delete_query = f"""
-                            DELETE FROM transcripts 
-                            WHERE youtube_id = %s 
+                            DELETE FROM transcripts
+                            WHERE youtube_id = %s
                             AND ({' OR '.join(delete_conditions)})
                         """
                         delete_params.insert(0, youtube_id)
-                        
+
                         cur.execute(delete_query, delete_params)
                         deleted_count = cur.rowcount
                         logger.info(f"Deleted {deleted_count} existing transcript entries")
                         conn.commit()
 
-            # 4. Add remaining new entries
+            # 4. Prepare and enrich remaining new entries
             batch_data = []
-            for segment in new_entries:
+            for segment in new_entries_segments: # Iterate through segments to add
                 segment_hash = self.get_segment_hash(segment, info.metadata)
-                batch_data.append({
+                # Define item dictionary correctly for this segment
+                item = {
                     'segment_hash': segment_hash,
                     'text': segment.text,
                     'title': info.metadata.get('title', ''),
@@ -279,34 +367,52 @@ class TranscriptDbManager:
                     'duration': int(segment.metadata['end_timestamp']) - int(segment.metadata['start_timestamp']),
                     'subjects': segment.metadata.get('subjects'),
                     'download': segment.metadata.get('download')
-                })
+                }
 
+                # --- Add Sentiment and NER --- << CORRECTLY PLACED INSIDE LOOP >>
+                sentiment_result = self._analyze_sentiment(item['text'])
+                ner_result = self._extract_entities(item['text']) # Use item['text'] for consistency
+                item['sentiment_score'] = sentiment_result['score']
+                item['sentiment_label'] = sentiment_result['label']
+                item['entities'] = ner_result # This is already a dict or None
+                # -----------------------------
+
+                # Append the enriched item ONCE
+                batch_data.append(item)
+
+
+            # 5. Insert the enriched batch data
             if batch_data:
                 # Use the database manager to add transcripts
                 with self.db_manager.get_write_conn() as conn:
                     with conn.cursor() as cur:
                         # Prepare data for batch insert
                         data = []
-                        for item in batch_data:
+                        for item_to_insert in batch_data: # Use a different loop variable name
+                            entities_json = psycopg2.extras.Json(item_to_insert['entities']) if item_to_insert['entities'] is not None else None
                             data.append((
-                                item['segment_hash'],
-                                item['title'],
-                                item['date'],
-                                item['youtube_id'],
-                                item['source'],
-                                item['speaker'],
-                                item.get('company'),
-                                item.get('start_time'),
-                                item.get('end_time'),
-                                item.get('duration'),
-                                item.get('subjects'),
-                                item.get('download'),
-                                item['text'],
-                                None,  # text_vector will be computed by the database
+                                item_to_insert['segment_hash'],
+                                item_to_insert['title'],
+                                item_to_insert['date'],
+                                item_to_insert['youtube_id'],
+                                item_to_insert['source'],
+                                item_to_insert['speaker'],
+                                item_to_insert.get('company'),
+                                item_to_insert.get('start_time'),
+                                item_to_insert.get('end_time'),
+                                item_to_insert.get('duration'),
+                                item_to_insert.get('subjects'),
+                                item_to_insert.get('download'),
+                                item_to_insert['text'],
+                                None,  # text_vector placeholder
                                 # Concatenate fields for full-text search
-                                f"{item['title']} {item['speaker']} {item.get('company', '')} {item['text']}"
+                                f"{item_to_insert.get('title', '')} {item_to_insert.get('speaker', '')} {item_to_insert.get('company', '')} {item_to_insert.get('text', '')}",
+                                # New fields
+                                item_to_insert.get('sentiment_score'),
+                                item_to_insert.get('sentiment_label'),
+                                entities_json
                             ))
-                        
+
                         # Execute batch insert
                         from psycopg2.extras import execute_values
                         execute_values(
@@ -315,13 +421,14 @@ class TranscriptDbManager:
                             INSERT INTO transcripts (
                                 segment_hash, title, date, youtube_id, source, speaker, company,
                                 start_time, end_time, duration, subjects, download, text,
-                                text_vector, search_vector
+                                text_vector, search_vector,
+                                sentiment_score, sentiment_label, entities
                             )
                             VALUES %s
                             ''',
                             data,
-                            # Use %s for text_vector placeholder instead of NULL literal
-                            template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_tsvector('english', %s))'''
+                            # Updated template for new columns
+                            template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_tsvector('english', %s), %s, %s, %s)'''
                         )
                         conn.commit()
                 logger.info(f"Added {len(batch_data)} new transcript segments")
@@ -340,3 +447,93 @@ class TranscriptDbManager:
             f"{main_metadata.get('date', '')}"
         )
         return hashlib.md5(hash_string.encode()).hexdigest()
+
+    # --- Helper methods for AI processing ---
+
+    def _analyze_sentiment(self, text: str) -> Dict[str, Any]:
+        """Analyzes sentiment of the text using the loaded pipeline."""
+        default_sentiment = {"label": "neutral", "score": 0.0}
+        if not self.sentiment_pipeline or not text:
+            return default_sentiment
+
+        try:
+            # Transformers pipeline expects a list
+            results = self.sentiment_pipeline([text])
+            if results:
+                # Map labels if needed (e.g., LABEL_0 -> negative)
+                # The specific mapping depends on the model used.
+                # For cardiffnlp/twitter-roberta-base-sentiment-latest:
+                # LABEL_0: negative, LABEL_1: neutral, LABEL_2: positive
+                label_map = {"LABEL_0": "negative", "LABEL_1": "neutral", "LABEL_2": "positive"}
+                raw_label = results[0]['label']
+                label = label_map.get(raw_label, "neutral") # Default to neutral if mapping fails
+
+                # Adjust score: positive (0 to 1), negative (-1 to 0)
+                score = results[0]['score']
+                if label == "negative":
+                    score = -score # Make negative scores negative
+
+                return {"label": label, "score": score}
+            else:
+                return default_sentiment
+        except Exception as e:
+            logger.error(f"Error during sentiment analysis for text '{text[:50]}...': {e}", exc_info=True)
+            return default_sentiment
+
+    def _extract_entities(self, text: str) -> Optional[Dict[str, List[str]]]:
+        """Extracts named entities using the Anthropic API."""
+        if not self.anthropic_client or not text:
+            return None
+
+        try:
+            # Define the prompt for NER extraction
+            system_prompt = f"""
+            Analyze the following text segment and extract named entities (People, Organizations, Locations).
+            Return ONLY a JSON object conforming to the ExtractedEntities schema, like {{"entities": {{"PERSON": ["name1"], "ORG": ["org1"]}}}}. Ensure the JSON is valid.
+            If no entities are found, return {{"entities": {{}}}}.
+
+            Text: "{text}"
+            """
+
+            # Make standard API call without response_model
+            message = self.anthropic_client.messages.create(
+                model=self.ner_model_name,
+                max_tokens=512, # Reduced tokens for NER task
+                messages=[{"role": "user", "content": system_prompt}],
+                # Remove response_model=ExtractedEntities
+            )
+
+            # Extract the raw text content
+            raw_response_content = None
+            if message.content and isinstance(message.content, list) and len(message.content) > 0:
+                 if hasattr(message.content[0], 'text'):
+                      raw_response_content = message.content[0].text
+
+            if not raw_response_content:
+                 logger.warning(f"No valid text content found in NER response for text '{text[:50]}...'")
+                 return None
+
+            logger.debug(f"Raw NER response from Anthropic: {raw_response_content}")
+
+            # Parse the raw JSON string using json.loads and validate with Pydantic
+            try:
+                # Attempt to find the JSON block if the response isn't pure JSON
+                json_start = raw_response_content.find('{')
+                json_end = raw_response_content.rfind('}') + 1
+                if json_start != -1 and json_end != -1:
+                    json_string = raw_response_content[json_start:json_end]
+                else:
+                    json_string = raw_response_content # Assume it's pure JSON
+
+                parsed_data = json.loads(json_string)
+                # Validate against the Pydantic model
+                extracted_entities_obj = ExtractedEntities(**parsed_data)
+                # Return the dictionary from the Pydantic model
+                return extracted_entities_obj.entities
+            except (json.JSONDecodeError, TypeError, ValueError) as parse_error:
+                 logger.error(f"Failed to parse Anthropic NER response into ExtractedEntities: {parse_error}")
+                 logger.error(f"Raw NER response was: {raw_response_content}")
+                 return None # Return None on parsing error
+        except Exception as e:
+            logger.error(f"Error during NER extraction for text '{text[:50]}...': {e}", exc_info=True)
+            return None # Return None on error

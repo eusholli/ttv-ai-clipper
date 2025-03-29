@@ -3,8 +3,6 @@
 -- This file represents the final state of the database after all migrations
 -- Can be used to initialize a fresh database instance
 
--- Wrap everything in a transaction
-BEGIN;
 
 -- Drop existing objects if they exist
 DROP TRIGGER IF EXISTS update_ingest_jobs_updated_at ON ingest_jobs;
@@ -42,7 +40,10 @@ CREATE TABLE transcripts (
     download TEXT,
     text TEXT,
     text_vector vector(384),  -- for semantic search
-    search_vector tsvector     -- for full-text search
+    search_vector tsvector,    -- for full-text search
+    sentiment_score FLOAT,     -- Sentiment score (-1.0 to 1.0 or similar)
+    sentiment_label VARCHAR(20), -- e.g., 'positive', 'negative', 'neutral'
+    entities JSONB             -- Extracted named entities (e.g., {"PERSON": ["John"], "ORG": ["Acme"]})
 );
 
 -- Ingest jobs table for tracking video processing workflow
@@ -108,6 +109,8 @@ CREATE INDEX idx_date ON transcripts (date);
 CREATE INDEX idx_search_vector ON transcripts USING gin(search_vector);
 CREATE INDEX idx_text_vector ON transcripts USING ivfflat (text_vector vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX idx_youtube_id ON transcripts (youtube_id);
+CREATE INDEX idx_sentiment_score ON transcripts (sentiment_score); -- Index for filtering/sorting by sentiment
+CREATE INDEX idx_entities_gin ON transcripts USING gin(entities); -- GIN index for efficient JSONB querying
 
 -- Create indexes for ingest_jobs table
 CREATE INDEX idx_jobs_status ON ingest_jobs (status);
@@ -125,7 +128,5 @@ ALTER DATABASE CURRENT SET statement_timeout = '30s';
 ALTER DATABASE CURRENT SET idle_in_transaction_session_timeout = '30s';
 
 -- Insert initial schema version
-INSERT INTO schema_version (version) VALUES (11);
-
--- Commit the transaction
-COMMIT;
+-- Incrementing version to reflect schema changes
+INSERT INTO schema_version (version) VALUES (12);

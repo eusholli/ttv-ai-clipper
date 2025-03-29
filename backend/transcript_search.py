@@ -3,84 +3,14 @@ import logging
 from sentence_transformers import SentenceTransformer
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
-import spacy
 import torch
 from torch.quantization import quantize_dynamic
 from backend.database.manager import DatabaseManager
+from backend.query_parser import get_query_parser # Import the factory
+from backend.query_models import ParsedQuery # Import the model for type hinting
 
 
-ALL_SUBJECTS = {
-    # Notable Technical Terms
-    "Bandwidth": "bandwidth",
-    "Slice/Slicing": "slice/slicing",
-    "Throughput": "throughput",
-    "Orchestration": "orchestration",
-    "Virtualization": "virtualization",
-    "Disaggregation": "disaggregation",
-    "Backhaul": "backhaul",
-    "Fronthaul": "fronthaul",
-    "Roaming": "roaming",
-    "API": "api",
-    "Fiber": "fiber",
-    "Orchestrator": "orchestrator",
-    "Automation": "automation",
-    
-    # Domain-Specific Terms
-    "RAN (Radio Access Network)": "ran",
-    "MIMO": "mimo",
-    "NFV (Network Functions Virtualization)": "nfv",
-    "SDN (Software Defined Networking)": "sdn",
-    "Telemetry": "telemetry",
-    "Containerization": "containerization",
-    "Microservices": "microservices",
-    "Cloudification": "cloudification",
-    "BSS (Business Support Systems)": "bss",
-    "OSS (Operations Support Systems)": "oss",
-    "QoS (Quality of Service)": "qos",
-    "SLA (Service Level Agreement)": "sla"
-}
-
-def extract_subject_info(text: str, nlp) -> List[str]:
-    # Process input text
-    text_doc = nlp(text.lower())
-    
-    # Get text characteristics
-    text_lemmas = {token.lemma_ for token in text_doc if token.is_alpha}
-    text_tokens = {token.text for token in text_doc if token.is_alpha}
-    text_stems = {token.lemma_[:4] for token in text_doc if token.is_alpha and len(token.lemma_) > 4}  # Get word stems
-    
-    # Get matched subjects
-    matched_subjects = []
-    for subject in ALL_SUBJECTS.values():
-        # Process subject
-        subject_doc = nlp(subject.lower())
-        subject_tokens = [token for token in subject_doc if token.is_alpha]
-        
-        # Skip empty subjects
-        if not subject_tokens:
-            continue
-            
-        # Check for matches using multiple methods
-        matched = False
-        
-        # 1. Direct token match
-        if any(token.text in text_tokens for token in subject_tokens):
-            matched = True
-            
-        # 2. Lemma match
-        if not matched and any(token.lemma_ in text_lemmas for token in subject_tokens):
-            matched = True
-            
-        # 3. Stem match for longer words
-        if not matched:
-            subject_stems = {token.lemma_[:4] for token in subject_tokens if len(token.lemma_) > 4}
-            if subject_stems and subject_stems.intersection(text_stems):
-                matched = True
-        
-        if matched:
-            matched_subjects.append(subject)
-            
-    return matched_subjects
+# Removed ALL_SUBJECTS dictionary and extract_subject_info function
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -90,14 +20,14 @@ class TranscriptSearch:
         """Initialize required extensions"""
         # Initialize database manager
         self.dal = DatabaseManager()
-        
-        # Initialize models as None for lazy loading
-        self._nlp = None
+        # Initialize the query parser using the factory
+        self.query_parser = get_query_parser()
+
+        # Initialize embedding model as None for lazy loading
         self._model = None
+        # Keep filter values cache if get_available_filters is still used by frontend etc.
         self._filter_values = None
-        
-        # Initialize filter values
-        self._filter_values = self.get_available_filters()
+        self._filter_values = self.get_available_filters() # Load initial filters
  
     @staticmethod
     def _create_quantized_transformer():
@@ -122,26 +52,8 @@ class TranscriptSearch:
         
         return model
 
-    @staticmethod
-    def _create_quantized_spacy():
-        """Load and optimize spaCy model"""
-        # Load the smallest model
-        nlp = spacy.load("en_core_web_sm", disable=["parser", "ner", "textcat"])
-        
-        # Remove unnecessary pipes
-        pipes_to_remove = ["tok2vec", "tagger"]
-        for pipe in pipes_to_remove:
-            if pipe in nlp.pipe_names:
-                nlp.remove_pipe(pipe)
-        
-        return nlp
-
-    @property
-    def nlp(self):
-        """Lazy initialization of spaCy model"""
-        if self._nlp is None:
-            self._nlp = self._create_quantized_spacy()
-        return self._nlp
+    # Removed _create_quantized_spacy method
+    # Removed nlp property
 
     @property
     def model(self):
@@ -184,10 +96,16 @@ class TranscriptSearch:
         # Generate embedding using quantized model
         embedding = self.encode_text(text)
 
-        # Use DAL to add transcript
+        # NOTE: This method might become less relevant as enrichment (sentiment/NER)
+        # is now handled in TranscriptDbManager during ingestion.
+        # It currently lacks sentiment/entity parameters needed by the updated add_transcript_db.
+        # Consider refactoring or removing if add_transcript is always called via TranscriptDbManager.
+        logger.warning("TranscriptSearch.add_transcript called directly. Enrichment (sentiment/NER) will be missing.")
+        # Use DAL to add transcript (passing None for new fields)
         self.dal.add_transcript_db(
             segment_hash, title, date, youtube_id, source, speaker, company,
-            start_time, end_time, duration, subjects, download, text, embedding
+            start_time, end_time, duration, subjects, download, text, embedding,
+            sentiment_score=None, sentiment_label=None, entities=None
         )
 
     def add_transcripts_batch(self, transcripts: List[Dict[str, Any]]) -> None:
@@ -198,7 +116,11 @@ class TranscriptSearch:
         texts = [t['text'] for t in transcripts]
         embeddings = self.encode_text(texts)
         
-        # Use DAL to add transcripts
+        # NOTE: Similar to add_transcript, this method might become less relevant.
+        # The calling code (likely in TranscriptDbManager) should now handle enrichment
+        # before calling the DAL directly or this method needs updating.
+        logger.warning("TranscriptSearch.add_transcripts_batch called directly. Enrichment (sentiment/NER) will be missing.")
+        # Use DAL to add transcripts (assuming transcripts dicts don't have new fields yet)
         self.dal.add_transcripts_batch_db(transcripts, embeddings)
 
     def hybrid_search(self,
@@ -207,58 +129,76 @@ class TranscriptSearch:
                      semantic_weight: float = 0.5,
                      limit: int = 10) -> List[Dict]:
         """
-        Perform hybrid search combining semantic similarity, full-text search, and metadata filtering
-        
+        Perform hybrid search using LLM query parsing and enriched index data.
+
         Args:
-            search_text: The text to search for
-            filters: Dictionary of metadata filters:
-                - date_range: Tuple[datetime, datetime] - Start and end dates
-                - speakers: List[str] - List of speakers to filter on
-                - companies: List[str] - List of companies to filter on
-                - subjects: List[str] - List of subjects to filter on
+            search_text: The natural language text to search for.
+            filters: Optional dictionary of *additional* metadata filters provided
+                     directly (e.g., from UI controls). These supplement any filters
+                     identified by the LLM in the search_text.
+                - date_range: Tuple[datetime, datetime]
+                - speakers: List[str]
+                - companies: List[str]
+                # Note: 'subjects' filter might be less relevant now, relying on concepts/entities.
                 - min_duration: int - Minimum duration
                 - max_duration: int - Maximum duration
                 - title: str - Filter by partial title match (case-insensitive)
             semantic_weight: Weight given to semantic search vs full-text search (0.0 to 1.0)
-            limit: Maximum number of results to return
-            
-        Returns:
-            List of matching transcripts with similarity scores
-        """
-        # Initialize filters dict if None
-        if filters is None:
-            filters = {}
-            
-        # Convert search text to lowercase for case-insensitive matching
-        search_text_lower = search_text.lower()
-        
-        # Check for filter values in search text
-        filter_mappings = {
-            "speakers": "speakers",
-            "companies": "companies"
-        }
-        
-        for filter_key, filter_name in filter_mappings.items():
-            found_values = [v for v in self._filter_values[filter_key] 
-                          if v and v.lower() in search_text_lower]
-            if found_values:
-                if filter_name not in filters:
-                    filters[filter_name] = found_values
-                else:
-                    filters[filter_name] = list(set(filters[filter_name] + found_values))
-        
-        found_subjects = extract_subject_info(search_text_lower, self.nlp)
-        if found_subjects:
-            if 'subjects' not in filters:
-                filters['subjects'] = found_subjects
-            else:
-                filters['subjects'] = list(set(filters['subjects'] + found_subjects))
+            limit: Maximum number of results to return.
 
-        # Generate embedding for semantic search
-        search_embedding = self.encode_text(search_text)
-        
-        # Use DAL to perform search
-        return self.dal.hybrid_search_db(search_text, search_embedding, filters, semantic_weight, limit)
+        Returns:
+            List of matching transcripts with similarity scores.
+        """
+        logger.info(f"Performing hybrid search for: '{search_text}' with filters: {filters}")
+
+        # 1. Parse the natural language query using the configured parser
+        try:
+            parsed_query: ParsedQuery = self.query_parser.parse(search_text)
+            logger.debug(f"Parsed query: {parsed_query}")
+        except Exception as e:
+            logger.error(f"Query parsing failed for '{search_text}': {e}", exc_info=True)
+            # Handle error appropriately - maybe return empty list or raise
+            # For now, return empty list
+            return []
+
+        # 2. Generate embedding for semantic search based on parsed concepts
+        # Join concepts into a single string for the encoder
+        concepts_text = " ".join(parsed_query.search_concepts) if parsed_query.search_concepts else search_text
+        try:
+            search_embedding = self.encode_text(concepts_text)
+        except Exception as e:
+            logger.error(f"Failed to encode concepts '{concepts_text}': {e}", exc_info=True)
+            return [] # Cannot perform search without embedding
+
+        # 3. Combine LLM-extracted filters with explicitly provided filters
+        # Explicit filters take precedence or are merged.
+        final_filters = parsed_query.filters.copy()
+        if filters: # Merge explicit filters
+            for key, value in filters.items():
+                if key in final_filters and isinstance(final_filters[key], list) and isinstance(value, list):
+                    # Merge lists and remove duplicates
+                    final_filters[key] = list(set(final_filters[key] + value))
+                else:
+                    # Overwrite or add new filter
+                    final_filters[key] = value
+        parsed_query.filters = final_filters # Update the ParsedQuery object
+
+        # 4. Use DAL to perform search, passing the entire ParsedQuery object
+        try:
+            # Note: The DAL method hybrid_search_db needs to be updated
+            # to accept ParsedQuery instead of individual arguments.
+            # Assuming that update happens in the next step.
+            results = self.dal.hybrid_search_db(
+                parsed_query=parsed_query, # Pass the structured query object
+                search_embedding=search_embedding,
+                semantic_weight=semantic_weight,
+                limit=limit
+            )
+            logger.info(f"Hybrid search returned {len(results)} results.")
+            return results
+        except Exception as e:
+            logger.error(f"Database search failed: {e}", exc_info=True)
+            return [] # Return empty list on database error
 
     def get_metadata_by_hash(self, segment_hash: str) -> Optional[Dict]:
         """

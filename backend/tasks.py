@@ -3,6 +3,7 @@ import json
 import traceback
 from dataclasses import asdict
 from celery import Celery
+from dotenv import load_dotenv # Import load_dotenv
 from backend.ingest.video_processor import VideoProcessor
 from backend.ingest.constants import CACHE_DIR, CLIP_DIR
 from backend.workflow_processor import WorkflowProcessor
@@ -11,6 +12,9 @@ import logging
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Load environment variables from .env file at the start
+load_dotenv()
 
 # Initialize and configure Celery
 celery = Celery('tasks')
