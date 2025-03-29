@@ -61,7 +61,7 @@ def process_url_task(self, url: str, job_id: int, auto_approve: bool = False):
         asyncio.set_event_loop(db_loop)
         try:
             # Check current state
-            with workflow_processor.get_read_connection() as conn:
+            with workflow_processor.dal.get_read_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute('SELECT workflow_state FROM ingest_jobs WHERE id = %s', (job_id,))
                     result = cur.fetchone()
@@ -81,7 +81,7 @@ def process_url_task(self, url: str, job_id: int, auto_approve: bool = False):
                 logger.info(f"Auto-approve enabled for job {job_id}, checking parsing status")
                 try:
                     # Get the current parsing status
-                    with workflow_processor.get_read_connection() as conn:
+                    with workflow_processor.dal.get_read_conn() as conn:
                         with conn.cursor() as cur:
                             cur.execute('''
                                 SELECT parsing_status
@@ -177,7 +177,8 @@ def process_video_task(self, info: dict, job_id: int):
                     result_dict = result.model_dump()
                     logger.info(f"Successfully converted result to dict with keys: {result_dict.keys()}")
                     
-                    with workflow_processor._write_pool.getconn() as conn:
+                    # Use DatabaseManager for database operations
+                    with workflow_processor.dal.get_write_conn() as conn:
                         with conn.cursor() as cur:
                             cur.execute('''
                                 UPDATE ingest_jobs 

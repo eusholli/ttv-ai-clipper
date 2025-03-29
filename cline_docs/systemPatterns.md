@@ -33,9 +33,11 @@
 - Proper error state handling and recovery
 
 ### 5. Database Optimization
-- Connection pooling
-- Transaction isolation levels
-- Statement timeouts (30s default)
+- Data Access Layer (DAL) pattern for centralized database operations
+- Separate read and write connection pools for reduced contention
+- Optimized pool configurations (10-30 connections for reads, 5-20 for writes)
+- Transaction isolation levels (READ COMMITTED for reads, REPEATABLE READ for writes)
+- Configurable statement timeouts (5s for reads, 30s for writes)
 - Performance indexes for common queries
 - Separate job_transcripts table for large JSONB data
 - JSONB columns for flexible metadata storage
@@ -43,6 +45,7 @@
 - IVFFlat index for vector similarity search
 - Trigger-based timestamp management
 - Workflow state constraints
+- Consistent retry mechanism with exponential backoff
 
 ### 6. Authentication & Authorization
 - Clerk for user authentication

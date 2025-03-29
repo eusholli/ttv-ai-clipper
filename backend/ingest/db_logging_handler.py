@@ -1,6 +1,6 @@
 import logging
 from typing import Optional, List
-from backend.transcript_search import TranscriptSearch
+from backend.database.manager import DatabaseManager
 
 class DatabaseLogHandler(logging.Handler):
     """Custom logging handler that buffers logs and writes them to database in batches"""
@@ -11,7 +11,7 @@ class DatabaseLogHandler(logging.Handler):
     def __init__(self, job_id: Optional[int] = None):
         super().__init__()
         self.job_id = job_id
-        self.search = TranscriptSearch()
+        self.db_manager = DatabaseManager()
         self.buffer: List[str] = []
         
         # Set a detailed format with milliseconds and thread info
@@ -27,7 +27,7 @@ class DatabaseLogHandler(logging.Handler):
             return
             
         try:
-            with self.search.get_db_connection() as conn:
+            with self.db_manager.get_write_conn() as conn:
                 with conn.cursor() as cur:
                     # Get existing log once
                     cur.execute('SELECT last_log_file FROM ingest_jobs WHERE id = %s', (self.job_id,))

@@ -3,11 +3,6 @@ import traceback
 import os
 from datetime import datetime
 from pathlib import Path
-import json
-import traceback
-import os
-from datetime import datetime
-from pathlib import Path
 from typing import Optional, Tuple
 
 # Removed unused imports: List, Dict, Any, TranscriptSegment, parse_transcript, parse_raw_html
@@ -15,6 +10,7 @@ from .logging_setup import logger
 from .models import Transcript
 from .html_extractor import HtmlExtractor
 from backend.transcript_search import TranscriptSearch
+from backend.database.manager import DatabaseManager
 from backend.video_utils import is_youtube_url, extract_youtube_id
 from backend.youtube_transcript_maker import get_youtube_transcript
 
@@ -25,6 +21,7 @@ class UrlProcessor:
         self.cache_dir = cache_dir
         self.html_extractor = HtmlExtractor()
         self.search = TranscriptSearch()
+        self.db_manager = DatabaseManager()
 
     def get_cached_url(self, url: str) -> Tuple[Path, Path]:
         """Get paths for cached files"""
@@ -110,7 +107,7 @@ class UrlProcessor:
             
             # Update database
             if job_id:
-                with self.search.get_db_connection() as conn:
+                with self.db_manager.get_write_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute('''
                             UPDATE ingest_jobs 
@@ -174,7 +171,7 @@ class UrlProcessor:
                 store_start = datetime.now()
                 parsing_status = {"success": True, "error": ""}
                 
-                with self.search.get_db_connection() as conn:
+                with self.db_manager.get_write_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute('''
                             UPDATE ingest_jobs 
@@ -186,10 +183,10 @@ class UrlProcessor:
                         conn.commit()
                 store_duration = (datetime.now() - store_start).total_seconds()
                 logger.info(f"Database storage completed in {store_duration:.2f} seconds")
-                
-                # Note: We intentionally avoid setting the state to editing_metadata here
-                # to prevent the UI from stopping progress updates when auto_approve is enabled.
-                # State transitions are centrally managed in tasks.py instead.
+            
+            # Note: We intentionally avoid setting the state to editing_metadata here
+            # to prevent the UI from stopping progress updates when auto_approve is enabled.
+            # State transitions are centrally managed in tasks.py instead.
 
             return transcript_obj
 

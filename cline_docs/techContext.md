@@ -74,7 +74,10 @@
 - API response time < 500ms
 - Video processing in background
 - Efficient search queries
-- Proper connection pooling
+- Data Access Layer (DAL) with separate read/write connection pools
+- Optimized connection pool configurations
+- Transaction isolation levels for different operations
+- Standardized retry mechanism for database operations
 
 ### Security Requirements
 - JWT token validation

@@ -1,18 +1,12 @@
-import psycopg2
-from psycopg2.extras import execute_values
-from psycopg2 import pool
-from contextlib import contextmanager
-from functools import wraps
-import time
+# backend/transcript_search.py
 import logging
 from sentence_transformers import SentenceTransformer
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
-import os
-from dotenv import load_dotenv
 import spacy
 import torch
 from torch.quantization import quantize_dynamic
+from backend.database.manager import DatabaseManager
 
 
 ALL_SUBJECTS = {
@@ -89,102 +83,13 @@ def extract_subject_info(text: str, nlp) -> List[str]:
     return matched_subjects
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Maximum number of retries for database operations
-MAX_RETRIES = 5  # Increased from 3 to match WorkflowProcessor
-RETRY_DELAY = 1  # seconds
-
-# Additional error types to retry on
-RETRY_ERRORS = (
-    psycopg2.OperationalError,  # Connection related errors
-    psycopg2.InterfaceError,    # Connection related errors
-    psycopg2.InternalError      # Internal database errors
-)
-
-def with_retry(func):
-    """Decorator to retry database operations with exponential backoff"""
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        last_error = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                return func(*args, **kwargs)
-            except RETRY_ERRORS as e:
-                last_error = e
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
-                    logger.warning(f"Database operation failed, retrying in {delay}s: {str(e)}")
-                    time.sleep(delay)
-                    continue
-        raise last_error
-    return wrapper
-
 class TranscriptSearch:
-    _pool = None
-    
-    @classmethod
-    def initialize_pool(cls):
-        """Initialize the connection pool if it hasn't been created yet"""
-        if cls._pool is not None:
-            return
-            
-        load_dotenv()
-        
-        # Check for required environment variables
-        required_vars = ['DB_NAME', 'DB_USER', 'DB_PWD', 'DB_HOST']
-        missing_vars = [var for var in required_vars if not os.getenv(var)]
-        if missing_vars:
-            raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
-            
-        # Check if running in Cloud Run (INSTANCE_CONNECTION_NAME will be set)
-        instance_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
-        
-        if instance_connection_name:
-            # Use Unix domain socket for Cloud SQL
-            db_socket_dir = '/cloudsql'
-            cloud_sql_connection_name = os.getenv('INSTANCE_CONNECTION_NAME')
-            connection_args = {
-                'dbname': os.getenv('DB_NAME'),
-                'user': os.getenv('DB_USER'),
-                'password': os.getenv('DB_PWD'),
-                'host': f'{db_socket_dir}/{cloud_sql_connection_name}',
-                'connect_timeout': 30
-            }
-        else:
-            # Use regular connection for local development
-            connection_args = {
-                'dbname': os.getenv('DB_NAME'),
-                'user': os.getenv('DB_USER'),
-                'password': os.getenv('DB_PWD'),
-                'host': os.getenv('DB_HOST'),
-                'sslmode': 'require',  # Required for Neon database connections
-                'connect_timeout': 30,  # Set connection timeout to 30 seconds
-                'keepalives': 1,  # Enable TCP keepalives
-                'keepalives_idle': 5,  # Reduced idle time before first keepalive
-                'keepalives_interval': 2,  # More frequent keepalive retransmits
-                'keepalives_count': 5,  # Reduced number of retries for faster failure detection
-                'tcp_user_timeout': 5000,  # Reduced TCP timeout for faster failure detection
-                'application_name': 'ttv-ai-clipper'  # Identify application in database logs
-            }
-            
-        try:
-            # Use optimized pool settings
-            cls._pool = pool.ThreadedConnectionPool(
-                minconn=5,  # Increased minimum connections for better availability
-                maxconn=30,  # Increased maximum connections to handle more concurrent operations
-                **connection_args
-            )
-            logger.info("Database connection pool initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize connection pool: {str(e)}")
-            raise
-
     def __init__(self):
         """Initialize required extensions"""
-        # Ensure pool is initialized
-        self.initialize_pool()
+        # Initialize database manager
+        self.dal = DatabaseManager()
         
         # Initialize models as None for lazy loading
         self._nlp = None
@@ -192,23 +97,7 @@ class TranscriptSearch:
         self._filter_values = None
         
         # Initialize filter values
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                self._filter_values = self._fetch_filter_values(cur)
-        
-    @contextmanager
-    def get_db_connection(self):
-        """Context manager for getting a connection from the pool"""
-        conn = None
-        try:
-            conn = self._pool.getconn()
-            yield conn
-        except Exception as e:
-            logger.error(f"Database connection error: {str(e)}")
-            raise
-        finally:
-            if conn is not None:
-                self._pool.putconn(conn)
+        self._filter_values = self.get_available_filters()
  
     @staticmethod
     def _create_quantized_transformer():
@@ -275,7 +164,6 @@ class TranscriptSearch:
                 return embedding
             return embedding.tolist()
 
-    @with_retry
     def add_transcript(self, 
                       segment_hash: str,
                       text: str,
@@ -296,34 +184,12 @@ class TranscriptSearch:
         # Generate embedding using quantized model
         embedding = self.encode_text(text)
 
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                try:
-                    cur.execute('''
-                        INSERT INTO transcripts (
-                            segment_hash, title, date, youtube_id, source, speaker, company,
-                            start_time, end_time, duration, subjects, download, text,
-                            text_vector, search_vector
-                        )
-                        VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            to_tsvector('english', COALESCE(%s, '') || ' ' || 
-                                                 COALESCE(%s, '') || ' ' || 
-                                                 COALESCE(%s, '') || ' ' ||
-                                                 COALESCE(%s, ''))
-                        )
-                    ''', (
-                        segment_hash, title, date, youtube_id, source, speaker, company,
-                        start_time, end_time, duration, subjects, download, text,
-                        embedding,
-                        title, speaker, company, text
-                    ))
-                    conn.commit()
-                except Exception as e:
-                    conn.rollback()
-                    raise e
+        # Use DAL to add transcript
+        self.dal.add_transcript_db(
+            segment_hash, title, date, youtube_id, source, speaker, company,
+            start_time, end_time, duration, subjects, download, text, embedding
+        )
 
-    @with_retry
     def add_transcripts_batch(self, transcripts: List[Dict[str, Any]]) -> None:
         """
         Batch insert multiple transcripts
@@ -332,50 +198,9 @@ class TranscriptSearch:
         texts = [t['text'] for t in transcripts]
         embeddings = self.encode_text(texts)
         
-        # Prepare data for batch insert
-        data = []
-        for transcript, embedding in zip(transcripts, embeddings):
-            data.append((
-                transcript['segment_hash'],
-                transcript['title'],
-                transcript['date'],
-                transcript['youtube_id'],
-                transcript['source'],
-                transcript['speaker'],
-                transcript.get('company'),
-                transcript.get('start_time'),
-                transcript.get('end_time'),
-                transcript.get('duration'),
-                transcript.get('subjects'),
-                transcript.get('download'),
-                transcript['text'],
-                embedding,
-                # Concatenate fields for full-text search
-                f"{transcript['title']} {transcript['speaker']} {transcript.get('company', '')} {transcript['text']}"
-            ))
-        
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                try:
-                    execute_values(
-                        cur,
-                        '''
-                        INSERT INTO transcripts (
-                            segment_hash, title, date, youtube_id, source, speaker, company,
-                            start_time, end_time, duration, subjects, download, text,
-                            text_vector, search_vector
-                        )
-                        VALUES %s
-                        ''',
-                        data,
-                        template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('english', %s))'''
-                    )
-                    conn.commit()
-                except Exception as e:
-                    conn.rollback()
-                    raise e
+        # Use DAL to add transcripts
+        self.dal.add_transcripts_batch_db(transcripts, embeddings)
 
-    @with_retry
     def hybrid_search(self,
                      search_text: str,
                      filters: Optional[Dict] = None,
@@ -430,161 +255,11 @@ class TranscriptSearch:
                 filters['subjects'] = list(set(filters['subjects'] + found_subjects))
 
         # Generate embedding for semantic search
-        # model = SentenceTransformer('all-MiniLM-L6-v2')
         search_embedding = self.encode_text(search_text)
         
-        # Build the query
-        query = '''
-            WITH combined_scores AS (
-                SELECT 
-                    segment_hash,
-                    title,
-                    date,
-                    youtube_id,
-                    source,
-                    speaker,
-                    company,
-                    start_time,
-                    end_time,
-                    duration,
-                    subjects,
-                    download,
-                    text,
-                    -- Combine semantic and full-text search scores
-                    (
-                        %s * (1 - (text_vector <=> %s::vector)) +
-                        %s * ts_rank_cd(search_vector, plainto_tsquery('english', %s))
-                    ) as similarity
-                FROM transcripts
-                WHERE 1=1
-        '''
-        
-        params = [
-            semantic_weight,
-            search_embedding,
-            1 - semantic_weight,
-            search_text
-        ]
-        
-        # Add filters if provided
-        if filters:
-            if 'date_range' in filters:
-                query += ' AND date BETWEEN %s AND %s'
-                params.extend([filters['date_range'][0], filters['date_range'][1]])
-            
-            # Handle speakers and companies with OR logic when both are present
-            if 'speakers' in filters and filters['speakers'] and 'companies' in filters and filters['companies']:
-                query += ' AND (speaker = ANY(%s) OR company = ANY(%s))'
-                params.extend([filters['speakers'], filters['companies']])
-            else:
-                # If only one filter is present, use normal AND logic
-                if 'speakers' in filters and filters['speakers']:
-                    query += ' AND speaker = ANY(%s)'
-                    params.append(filters['speakers'])
-                if 'companies' in filters and filters['companies']:
-                    query += ' AND company = ANY(%s)'
-                    params.append(filters['companies'])
+        # Use DAL to perform search
+        return self.dal.hybrid_search_db(search_text, search_embedding, filters, semantic_weight, limit)
 
-            if 'subjects' in filters and filters['subjects']:
-                query += ' AND subjects && ARRAY[%s]'
-                params.append(filters['subjects'])
-                        
-            if 'min_duration' in filters:
-                query += ' AND duration >= %s'
-                params.append(filters['min_duration'])
-            
-            if 'max_duration' in filters:
-                query += ' AND duration <= %s'
-                params.append(filters['max_duration'])
-                
-            if 'title' in filters and filters['title']:
-                query += ' AND title ILIKE %s'
-                params.append(f'%{filters["title"]}%')
-        
-        # Complete the query
-        query += '''
-            )
-            SELECT * FROM combined_scores
-            ORDER BY similarity DESC
-            LIMIT %s;
-        '''
-        params.append(limit)
-        
-        # Execute search
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                results = cur.fetchall()
-        
-        # Format results
-        formatted_results = []
-        for row in results:
-            formatted_results.append({
-                'segment_hash': row[0],
-                'title': row[1],
-                'date': row[2],
-                'youtube_id': row[3],
-                'source': row[4],
-                'speaker': row[5],
-                'company': row[6],
-                'start_time': row[7],
-                'end_time': row[8],
-                'duration': row[9],
-                'subjects': row[10],
-                'download': row[11],
-                'text': row[12],
-                'similarity': row[13]
-            })
-        
-        return formatted_results
-
-    def _fetch_filter_values(self, cursor) -> Dict[str, List[str]]:
-        """
-        Fetch and store unique values for each filterable field from the database
-        Returns a dictionary with lists of unique speakers, dates, titles, and companies
-        """
-        # Get unique speakers
-        cursor.execute('SELECT DISTINCT speaker FROM transcripts ORDER BY speaker')
-        speakers = [row[0] for row in cursor.fetchall()]
-
-        # Get unique dates and format them
-        cursor.execute('''
-            SELECT DISTINCT date::date 
-            FROM transcripts 
-            ORDER BY date DESC
-        ''')
-        dates = [row[0].strftime("%b %d, %Y") for row in cursor.fetchall()]
-
-        # Get unique titles
-        cursor.execute('SELECT DISTINCT title FROM transcripts ORDER BY title')
-        titles = [row[0] for row in cursor.fetchall()]
-
-        # Get unique companies
-        cursor.execute('SELECT DISTINCT company FROM transcripts ORDER BY company')
-        companies = [row[0] for row in cursor.fetchall() if row[0] is not None]
-
-        # Get unique subjects and create a dictionary mapping display names to values
-        cursor.execute('SELECT DISTINCT unnest(subjects) FROM transcripts ORDER BY 1')
-        db_subjects = [row[0] for row in cursor.fetchall() if row[0] is not None]
-        
-        # Create a dictionary mapping display names to values for subjects found in the database
-        # Find display string by matching value in ALL_SUBJECTS
-        subjects = {}
-        for db_subject in db_subjects:
-            for display_str, value in ALL_SUBJECTS.items():
-                if value == db_subject:
-                    subjects[display_str] = value
-                    break
-
-        return {
-            "speakers": speakers,
-            "dates": dates,
-            "titles": titles,
-            "companies": companies,
-            "subjects": subjects
-        }
-
-    @with_retry
     def get_metadata_by_hash(self, segment_hash: str) -> Optional[Dict]:
         """
         Get metadata for a specific segment by its hash
@@ -595,45 +270,14 @@ class TranscriptSearch:
         Returns:
             Dictionary containing segment metadata or None if not found
         """
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute('''
-                    SELECT 
-                        segment_hash, title, date, youtube_id, source, speaker, company,
-                        start_time, end_time, duration, subjects, download, text
-                    FROM transcripts 
-                    WHERE segment_hash = %s
-                ''', (segment_hash,))
-                
-                result = cur.fetchone()
-        
-        if result:
-            return {
-                'segment_hash': result[0],
-                'title': result[1],
-                'date': result[2],
-                'youtube_id': result[3],
-                'source': result[4],
-                'speaker': result[5],
-                'company': result[6],
-                'start_time': result[7],
-                'end_time': result[8],
-                'duration': result[9],
-                'subjects': result[10],
-                'download': result[11],
-                'text': result[12]
-            }
-        return None
+        return self.dal.get_metadata_by_hash_db(segment_hash)
 
-    @with_retry
     def get_available_filters(self) -> Dict[str, List[str]]:
         """
-        Returns the stored filter values with retry mechanism
+        Returns the stored filter values
         """
         try:
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    self._filter_values = self._fetch_filter_values(cur)
+            self._filter_values = self.dal.get_available_filters_db()
             return self._filter_values
         except Exception as e:
             logger.error(f"Error fetching filter values: {str(e)}")
@@ -646,10 +290,8 @@ class TranscriptSearch:
     @classmethod
     def close_pool(cls):
         """Close the connection pool"""
-        if cls._pool is not None:
-            cls._pool.closeall()
-            cls._pool = None
-            logger.info("Database connection pool closed")
+        DatabaseManager().close_pools()
+        logger.info("Database connection pools closed")
 
 
 # Example usage

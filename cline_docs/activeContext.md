@@ -1,9 +1,10 @@
 # Active Context
 
 ## Current Work
-- Fixed UI progress bar issue with auto-approved YouTube videos
-- Improved workflow state management for asynchronous tasks
-- Enhanced error handling in auto-approve workflow
+- Implemented Data Access Layer (DAL) for centralized database operations
+- Refactored database access code to improve performance and maintainability
+- Created separate read and write connection pools to reduce contention
+- Standardized error handling and retry mechanisms for database operations
 
 ## Recent Changes
 - **Simplified Ingestion:** Refactored codebase to support **only YouTube URL ingestion**. Removed code related to generic URL processing (`url_processor._process_regular_url`, `html_extractor.extract_transcript`, `transcript_parser.parse_raw_html`). Added frontend validation for YouTube URLs.

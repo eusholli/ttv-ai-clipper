@@ -9,6 +9,7 @@ from typing import Optional
 from .constants import MAX_WORKERS
 from .logging_setup import logger
 from .models import Transcript, TranscriptSegment
+from backend.database.manager import DatabaseManager  # Import DatabaseManager
 from backend.r2_manager import R2Manager
 from backend.video_utils import get_youtube_video, generate_clips
 
@@ -56,8 +57,8 @@ class VideoProcessor:
             logger.info(f"Video download completed in {download_duration:.2f} seconds")
             
             if job_id:
-                # Use the workflow processor's connection pool
-                with self.workflow_processor.get_db_connection() as conn:
+                # Use the DatabaseManager for write connection
+                with DatabaseManager().get_write_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute('''
                             UPDATE ingest_jobs 

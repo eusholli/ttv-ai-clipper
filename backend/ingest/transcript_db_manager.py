@@ -7,6 +7,7 @@ from .constants import MIN_DURATION
 from .logging_setup import logger
 from .models import TranscriptSegment, Transcript
 from backend.transcript_search import TranscriptSearch
+from backend.database.manager import DatabaseManager
 from backend.job_manager import JobManager
 from backend.r2_manager import R2Manager
 
@@ -15,6 +16,7 @@ class TranscriptDbManager:
 
     def __init__(self):
         self.search = TranscriptSearch()
+        self.db_manager = DatabaseManager()
         self.job_manager = JobManager()
         self.r2_manager = R2Manager()
 
@@ -25,7 +27,7 @@ class TranscriptDbManager:
             
             if youtube_id:
                 logger.info(f"Deleting existing entries for YouTube ID: {youtube_id}")
-                with self.search.get_db_connection() as conn:
+                with self.db_manager.get_write_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute('DELETE FROM transcripts WHERE youtube_id = %s', (youtube_id,))
                         conn.commit()
@@ -88,21 +90,96 @@ class TranscriptDbManager:
                 })
             
             try:
-                self.search.add_transcripts_batch(batch_data)
-                new_count = len(batch_data)
+                # Use the database manager to add transcripts
+                with self.db_manager.get_write_conn() as conn:
+                    with conn.cursor() as cur:
+                        # Prepare data for batch insert
+                        data = []
+                        for item in batch_data:
+                            data.append((
+                                item['segment_hash'],
+                                item['title'],
+                                item['date'],
+                                item['youtube_id'],
+                                item['source'],
+                                item['speaker'],
+                                item.get('company'),
+                                item.get('start_time'),
+                                item.get('end_time'),
+                                item.get('duration'),
+                                item.get('subjects'),
+                                item.get('download'),
+                                item['text'],
+                                None,  # text_vector will be computed by the database
+                                # Concatenate fields for full-text search
+                                f"{item['title']} {item['speaker']} {item.get('company', '')} {item['text']}"
+                            ))
+                        
+                        # Execute batch insert
+                        from psycopg2.extras import execute_values
+                        execute_values(
+                            cur,
+                            '''
+                            INSERT INTO transcripts (
+                                segment_hash, title, date, youtube_id, source, speaker, company,
+                                start_time, end_time, duration, subjects, download, text,
+                                text_vector, search_vector
+                            )
+                            VALUES %s
+                            ''',
+                            data,
+                            # Use %s for text_vector placeholder instead of NULL literal
+                            template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_tsvector('english', %s))'''
+                        )
+                        conn.commit()
+                        new_count = len(batch_data)
             except Exception as e:
                 if "duplicate key value" in str(e):
                     # If we hit duplicates, fall back to individual inserts
                     new_count = 0
                     skipped = 0
-                    for data in batch_data:
+                    for item in batch_data:
                         try:
-                            self.search.add_transcript(**data)
+                            with self.db_manager.get_write_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute('''
+                                        INSERT INTO transcripts (
+                                            segment_hash, title, date, youtube_id, source, speaker, company,
+                                            start_time, end_time, duration, subjects, download, text,
+                                            search_vector
+                                        )
+                                        VALUES (
+                                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                            to_tsvector('english', COALESCE(%s, '') || ' ' || 
+                                                                 COALESCE(%s, '') || ' ' || 
+                                                                 COALESCE(%s, '') || ' ' ||
+                                                                 COALESCE(%s, ''))
+                                        )
+                                    ''', (
+                                        item['segment_hash'], 
+                                        item['title'], 
+                                        item['date'], 
+                                        item['youtube_id'], 
+                                        item['source'], 
+                                        item['speaker'], 
+                                        item.get('company'),
+                                        item.get('start_time'), 
+                                        item.get('end_time'), 
+                                        item.get('duration'), 
+                                        item.get('subjects'), 
+                                        item.get('download'), 
+                                        item['text'],
+                                        item['title'], 
+                                        item['speaker'], 
+                                        item.get('company', ''), 
+                                        item['text']
+                                    ))
+                                    conn.commit()
                             new_count += 1
                         except Exception as e2:
                             if "duplicate key value" in str(e2):
                                 skipped += 1
-                                logger.info(f"Skipping duplicate segment: {data['segment_hash']}")
+                                logger.info(f"Skipping duplicate segment: {item['segment_hash']}")
                             else:
                                 raise e2
                 else:
@@ -123,7 +200,7 @@ class TranscriptDbManager:
 
             # 1. Fetch existing transcript entries
             existing_entries = []
-            with self.search.get_db_connection() as conn:
+            with self.db_manager.get_read_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute('''
                         SELECT speaker, company, text, start_time, end_time, download
@@ -162,7 +239,7 @@ class TranscriptDbManager:
 
             # Delete only the entries that remain in existing_set
             if existing_set:
-                with self.search.get_db_connection() as conn:
+                with self.db_manager.get_write_conn() as conn:
                     with conn.cursor() as cur:
                         # Build the WHERE clause for the specific entries to delete
                         delete_conditions = []
@@ -205,7 +282,48 @@ class TranscriptDbManager:
                 })
 
             if batch_data:
-                self.search.add_transcripts_batch(batch_data)
+                # Use the database manager to add transcripts
+                with self.db_manager.get_write_conn() as conn:
+                    with conn.cursor() as cur:
+                        # Prepare data for batch insert
+                        data = []
+                        for item in batch_data:
+                            data.append((
+                                item['segment_hash'],
+                                item['title'],
+                                item['date'],
+                                item['youtube_id'],
+                                item['source'],
+                                item['speaker'],
+                                item.get('company'),
+                                item.get('start_time'),
+                                item.get('end_time'),
+                                item.get('duration'),
+                                item.get('subjects'),
+                                item.get('download'),
+                                item['text'],
+                                None,  # text_vector will be computed by the database
+                                # Concatenate fields for full-text search
+                                f"{item['title']} {item['speaker']} {item.get('company', '')} {item['text']}"
+                            ))
+                        
+                        # Execute batch insert
+                        from psycopg2.extras import execute_values
+                        execute_values(
+                            cur,
+                            '''
+                            INSERT INTO transcripts (
+                                segment_hash, title, date, youtube_id, source, speaker, company,
+                                start_time, end_time, duration, subjects, download, text,
+                                text_vector, search_vector
+                            )
+                            VALUES %s
+                            ''',
+                            data,
+                            # Use %s for text_vector placeholder instead of NULL literal
+                            template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_tsvector('english', %s))'''
+                        )
+                        conn.commit()
                 logger.info(f"Added {len(batch_data)} new transcript segments")
 
         except Exception as e:

@@ -3,7 +3,7 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from fastapi import FastAPI, HTTPException, Header, Depends, Request, BackgroundTasks, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Header, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from typing import List, Optional
@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from backend.r2_manager import R2Manager
 import stripe
 from typing import Optional
+from backend.database.manager import DatabaseManager
 from backend.transcript_search import TranscriptSearch
 from backend.job_manager import JobManager, Job
 from backend.workflow_processor import WorkflowProcessor
@@ -23,6 +24,7 @@ import logging
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
+from contextlib import asynccontextmanager
  
 # Configure logging
 logging.basicConfig(
@@ -63,8 +65,24 @@ if not stripe.api_key:
 if not STRIPE_WEBHOOK_SECRET:
     raise ValueError("STRIPE_WEBHOOK_SECRET environment variable is required")
 
+# Initialize database manager
+db_manager = DatabaseManager()
+
+# Lifespan context manager for FastAPI
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize database manager
+    logger.info("Initializing database connection pools")
+    # db_manager is already initialized above
+    
+    yield
+    
+    # Shutdown: Close database connection pools
+    logger.info("Closing database connection pools")
+    db_manager.close_pools()
+
 # Initialize app and managers
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 job_manager = JobManager()
 workflow_processor = WorkflowProcessor()
 
@@ -348,8 +366,12 @@ async def health_check():
 @app.get("/api/db-test")
 async def test_db():
     try:
-        transcript_search.cursor.execute('SELECT 1')
-        return {"status": "connected"}
+        # Test database connection using DAL
+        with db_manager.get_read_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT 1')
+                result = cur.fetchone()
+        return {"status": "connected", "result": result[0]}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
