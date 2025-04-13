@@ -24,12 +24,16 @@ from backend.r2_manager import R2Manager
 # Suppress verbose Hugging Face logging
 hf_logging.set_verbosity_error()
 
-# --- Pydantic Model for NER Output ---
-class ExtractedEntities(BaseModel):
-    """Structure for entities extracted by LLM."""
+# --- Pydantic Model for LLM Extraction Output ---
+class ExtractedData(BaseModel):
+    """Structure for entities and subjects extracted by LLM."""
     entities: Dict[str, List[str]] = Field(
         default_factory=dict,
         description="Named entities extracted from the text, categorized by type (e.g., {'PERSON': ['John Smith'], 'ORG': ['Tech Corp']})."
+    )
+    subjects: Optional[List[str]] = Field(
+        default_factory=list,
+        description="List of main subjects or topics discussed in the text."
     )
 
 class TranscriptDbManager:
@@ -47,7 +51,8 @@ class TranscriptDbManager:
             logger.info(f"Loading sentiment model: {self.sentiment_model_name}")
             # Using device=-1 forces CPU, might be safer in diverse deployment environments
             # unless GPU is guaranteed and configured.
-            self.sentiment_pipeline = pipeline("sentiment-analysis", model=self.sentiment_model_name, device=-1)
+            # Add truncation=True to handle texts longer than model's max length
+            self.sentiment_pipeline = pipeline("sentiment-analysis", model=self.sentiment_model_name, device=-1, truncation=True)
             logger.info("Sentiment model loaded successfully.")
         except Exception as e:
             logger.error(f"Failed to load sentiment model '{self.sentiment_model_name}': {e}", exc_info=True)
@@ -139,12 +144,16 @@ class TranscriptDbManager:
                     'download': segment.metadata.get('download') # Use .get for safety
                 }
 
-                # --- Add Sentiment and NER ---
-                sentiment_result = self._analyze_sentiment(item['text']) # Use item['text']
-                ner_result = self._extract_entities(segment.text) # Use segment.text here as item['text'] is the same
+                # --- Add Sentiment, NER, and Subjects ---
+                sentiment_result = self._analyze_sentiment(item['text'])
+                # Call the updated extraction method which now returns entities and subjects
+                # Use segment.text as it's directly from the loop iteration
+                processed_entities, processed_subjects = self._extract_entities_and_subjects(segment.text)
+
                 item['sentiment_score'] = sentiment_result['score']
                 item['sentiment_label'] = sentiment_result['label']
-                item['entities'] = ner_result # This is already a dict or None
+                item['entities'] = processed_entities # Assign processed entities
+                item['subjects'] = processed_subjects # Assign processed subjects
 
                 # Append the enriched item ONCE
                 batch_data.append(item)
@@ -369,12 +378,16 @@ class TranscriptDbManager:
                     'download': segment.metadata.get('download')
                 }
 
-                # --- Add Sentiment and NER --- << CORRECTLY PLACED INSIDE LOOP >>
+                # --- Add Sentiment, NER, and Subjects --- << CORRECTLY PLACED INSIDE LOOP >>
                 sentiment_result = self._analyze_sentiment(item['text'])
-                ner_result = self._extract_entities(item['text']) # Use item['text'] for consistency
+                # Call the updated extraction method
+                # Use item['text'] here as it's within the update_transcripts loop context
+                processed_entities, processed_subjects = self._extract_entities_and_subjects(item['text'])
+
                 item['sentiment_score'] = sentiment_result['score']
                 item['sentiment_label'] = sentiment_result['label']
-                item['entities'] = ner_result # This is already a dict or None
+                item['entities'] = processed_entities # Assign processed entities
+                item['subjects'] = processed_subjects # Assign processed subjects
                 # -----------------------------
 
                 # Append the enriched item ONCE
@@ -458,7 +471,13 @@ class TranscriptDbManager:
 
         try:
             # Transformers pipeline expects a list
-            results = self.sentiment_pipeline([text])
+            # The pipeline will automatically truncate the text if truncation=True was set
+            # For additional safety, we can manually limit text length to avoid tensor size mismatches
+            # RoBERTa models typically have a max length of 512 tokens
+            max_chars = 500  # Conservative estimate to stay under token limit
+            truncated_text = text[:max_chars] if len(text) > max_chars else text
+            
+            results = self.sentiment_pipeline([truncated_text])
             if results:
                 # Map labels if needed (e.g., LABEL_0 -> negative)
                 # The specific mapping depends on the model used.
@@ -478,29 +497,39 @@ class TranscriptDbManager:
                 return default_sentiment
         except Exception as e:
             logger.error(f"Error during sentiment analysis for text '{text[:50]}...': {e}", exc_info=True)
+            logger.info(f"Continuing processing with default neutral sentiment due to sentiment analysis error")
             return default_sentiment
 
-    def _extract_entities(self, text: str) -> Optional[Dict[str, List[str]]]:
-        """Extracts named entities using the Anthropic API."""
+    # Renamed method to reflect combined functionality
+    def _extract_entities_and_subjects(self, text: str) -> tuple[Optional[Dict[str, List[str]]], Optional[List[str]]]:
+        """Extracts named entities and subjects using the Anthropic API."""
+        default_return = (None, None)
         if not self.anthropic_client or not text:
-            return None
+            return default_return
 
         try:
-            # Define the prompt for NER extraction
+            # Define the prompt for combined extraction
+            # Updated schema example in prompt
             system_prompt = f"""
-            Analyze the following text segment and extract named entities (People, Organizations, Locations).
-            Return ONLY a JSON object conforming to the ExtractedEntities schema, like {{"entities": {{"PERSON": ["name1"], "ORG": ["org1"]}}}}. Ensure the JSON is valid.
-            If no entities are found, return {{"entities": {{}}}}.
+            Analyze the following text segment. Extract:
+            1. Named Entities: People (PERSON), Organizations (ORG), and Locations (LOC).
+            2. Subjects: A list of the main subjects or topics discussed (e.g., technology, finance, AI).
+
+            Return ONLY a single JSON object conforming to the ExtractedData schema:
+            {{"entities": {{"PERSON": ["name1"], "ORG": ["org1"], "LOC": ["loc1"]}}, "subjects": ["subject1", "subject2"]}}
+
+            Ensure the JSON is valid.
+            If no entities or subjects are found, return empty structures within the JSON, like:
+            {{"entities": {{}}, "subjects": []}}
 
             Text: "{text}"
             """
 
-            # Make standard API call without response_model
+            # Make standard API call
             message = self.anthropic_client.messages.create(
                 model=self.ner_model_name,
-                max_tokens=512, # Reduced tokens for NER task
+                max_tokens=1024, # Increased tokens slightly for potentially longer output
                 messages=[{"role": "user", "content": system_prompt}],
-                # Remove response_model=ExtractedEntities
             )
 
             # Extract the raw text content
@@ -510,10 +539,10 @@ class TranscriptDbManager:
                       raw_response_content = message.content[0].text
 
             if not raw_response_content:
-                 logger.warning(f"No valid text content found in NER response for text '{text[:50]}...'")
-                 return None
+                 logger.warning(f"No valid text content found in LLM extraction response for text '{text[:50]}...'")
+                 return default_return # Return default tuple
 
-            logger.debug(f"Raw NER response from Anthropic: {raw_response_content}")
+            logger.debug(f"Raw extraction response from Anthropic: {raw_response_content}")
 
             # Parse the raw JSON string using json.loads and validate with Pydantic
             try:
@@ -526,14 +555,37 @@ class TranscriptDbManager:
                     json_string = raw_response_content # Assume it's pure JSON
 
                 parsed_data = json.loads(json_string)
-                # Validate against the Pydantic model
-                extracted_entities_obj = ExtractedEntities(**parsed_data)
-                # Return the dictionary from the Pydantic model
-                return extracted_entities_obj.entities
+                # Validate against the updated Pydantic model
+                extracted_data_obj = ExtractedData(**parsed_data)
+
+                # --- Process Entities ---
+                raw_entities = extracted_data_obj.entities
+                processed_entities = {}
+                if raw_entities: # Check if the dictionary is not None or empty
+                    for entity_type, entity_list in raw_entities.items():
+                        if entity_list: # Check if the list is not None or empty
+                            # Convert to lowercase, remove duplicates using set, then convert back to list
+                            lower_unique_entities = list(set(entity.lower() for entity in entity_list if isinstance(entity, str)))
+                            processed_entities[entity_type] = lower_unique_entities
+                        else:
+                            processed_entities[entity_type] = [] # Keep empty list if original was empty
+                else:
+                     processed_entities = {} # Keep empty dict if original was empty or None
+
+                # --- Process Subjects ---
+                raw_subjects = extracted_data_obj.subjects
+                processed_subjects = []
+                if raw_subjects: # Check if list is not None or empty
+                    # Convert to lowercase, remove duplicates using set, then convert back to list
+                    processed_subjects = list(set(subj.lower() for subj in raw_subjects if isinstance(subj, str)))
+
+                # Return the processed entities and subjects as a tuple
+                return processed_entities, processed_subjects
             except (json.JSONDecodeError, TypeError, ValueError) as parse_error:
-                 logger.error(f"Failed to parse Anthropic NER response into ExtractedEntities: {parse_error}")
-                 logger.error(f"Raw NER response was: {raw_response_content}")
-                 return None # Return None on parsing error
+                 logger.error(f"Failed to parse Anthropic extraction response into ExtractedData: {parse_error}")
+                 logger.error(f"Raw extraction response was: {raw_response_content}")
+                 return default_return # Return default tuple on parsing error
         except Exception as e:
-            logger.error(f"Error during NER extraction for text '{text[:50]}...': {e}", exc_info=True)
-            return None # Return None on error
+            logger.error(f"Error during combined entity/subject extraction for text '{text[:50]}...': {e}", exc_info=True)
+            logger.info(f"Continuing processing with default empty entities and subjects due to extraction error")
+            return default_return # Return default tuple on error

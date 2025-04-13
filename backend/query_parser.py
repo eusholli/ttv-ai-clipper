@@ -82,18 +82,17 @@ class AnthropicQueryParser(QueryParser):
             # This prompt guides the LLM to extract information matching the ParsedQuery schema.
             # It explicitly asks for concepts, sentiment/intent, entities, filters, and relationships.
             system_prompt = f"""
-            Analyze the user's search query for video clips and extract the relevant information into the provided JSON schema.
-
-            Your goal is to understand the user's intent and structure the query for a hybrid search system (semantic + keyword + filters).
+            Analyze the user's search query for video clips and extract filtering criteria and intent into the provided JSON schema.
+            The primary search will be semantic based on the full query text, but this extraction helps apply filters.
 
             Query: "{query_text}"
 
             Instructions:
-            1.  **search_concepts**: Identify the core topics, ideas, or keywords the user is searching for. These will be used for semantic vector search and potentially keyword matching. Be concise but capture the essence.
-            2.  **sentiment_intent**: Determine the overall sentiment or intent. Choose ONE from: 'positive', 'negative', 'neutral', 'happiest', 'most_negative', 'objective', 'unclear'. 'objective' is the default if no clear sentiment is expressed. 'happiest'/'most_negative' imply comparative sentiment.
-            3.  **entities**: Extract named entities mentioned IN THE QUERY ITSELF (people, organizations, locations, specific products/terms if relevant). Categorize them (e.g., PERSON, ORG). If none, return empty dict.
-            4.  **filters**: Identify explicit or implicit metadata filters mentioned IN THE QUERY (e.g., specific speakers, companies, date constraints). Do NOT infer filters from general concepts. If none, return empty dict.
-            5.  **relationships**: Briefly describe any relationships between concepts or entities mentioned (e.g., 'mentions X and Y', 'Company A opinions on Topic B'). If none, return null.
+            1.  **search_concepts**: [DEPRECATED - No longer primary driver for vector search]. Briefly list main topics if obvious, but focus on other fields. Return empty list if unsure.
+            2.  **sentiment_intent**: Determine the overall sentiment or intent expressed *in the query*. Choose ONE from: 'positive', 'negative', 'neutral', 'happiest', 'most_negative', 'objective', 'unclear'. 'objective' is the default if no clear sentiment is expressed. This will be used for filtering results based on analyzed segment sentiment.
+            3.  **entities**: Extract named entities mentioned IN THE QUERY ITSELF (people, organizations, locations, specific products/terms if relevant). Categorize them (e.g., PERSON, ORG). This will be used for filtering results based on entities found in segments. If none, return empty dict.
+            4.  **filters**: Identify explicit or implicit metadata filters mentioned IN THE QUERY (e.g., specific speakers, companies, date constraints like "last week", "in 2023"). Do NOT infer filters from general topics. If none, return empty dict.
+            5.  **relationships**: [DEPRECATED - Less relevant now]. Briefly describe relationships if very clear, otherwise return null.
             6.  **original_query**: Include the original user query verbatim.
 
             Return ONLY the JSON object conforming to the ParsedQuery schema. Ensure the JSON is valid.
@@ -140,6 +139,43 @@ class AnthropicQueryParser(QueryParser):
                  logger.error(f"Failed to parse Anthropic response into ParsedQuery: {parse_error}")
                  logger.error(f"Raw response was: {raw_response_content}")
                  raise Exception(f"Failed to parse Anthropic response: {parse_error}") from parse_error
+
+            # --- Attempt Query Expansion (Optional Second LLM Call) ---
+            try:
+                expansion_prompt = f"""
+                Given the user's original search query for video clips related to telecom and technology:
+                "{parsed_query_obj.original_query}"
+
+                Expand or rephrase this query to potentially improve semantic search recall. Focus on adding relevant synonyms, related concepts, or clarifying the intent based on the likely domain.
+                Return ONLY the expanded/rephrased query text, without any preamble or explanation.
+                If the original query is already clear and concise, you can return it unchanged.
+                """
+                expansion_message = self.client.messages.create(
+                    model=self.model, # Use the same model for consistency
+                    max_tokens=512, # Shorter response needed
+                    messages=[{"role": "user", "content": expansion_prompt}],
+                )
+
+                expanded_query_text = None
+                if expansion_message.content and isinstance(expansion_message.content, list) and len(expansion_message.content) > 0:
+                    if hasattr(expansion_message.content[0], 'text'):
+                        expanded_query_text = expansion_message.content[0].text.strip()
+
+                if expanded_query_text:
+                    # Only assign if expansion is different and not empty
+                    if expanded_query_text != parsed_query_obj.original_query and expanded_query_text:
+                        parsed_query_obj.expanded_query = expanded_query_text
+                        logger.debug(f"Generated expanded query: {expanded_query_text}")
+                    else:
+                        logger.debug("Expansion resulted in the same or empty query, not storing.")
+                else:
+                     logger.warning("Failed to get valid content from Anthropic API response for query expansion.")
+
+            except Exception as expansion_error:
+                logger.warning(f"Optional query expansion failed: {expansion_error}", exc_info=False) # Log as warning, don't fail the whole parse
+
+            return parsed_query_obj # Return the object, potentially with expanded_query populated
+
         except Exception as e:
             logger.error(f"Error parsing query with Anthropic: {e}")
             # Consider returning a default/error ParsedQuery or re-raising

@@ -39,27 +39,37 @@
 - Transaction isolation levels (READ COMMITTED for reads, REPEATABLE READ for writes)
 - Configurable statement timeouts (5s for reads, 30s for writes)
 - Performance indexes for common queries
-- Separate job_transcripts table for large JSONB data
-- JSONB columns for flexible metadata storage
-- GiST and GIN indexes for efficient text search and JSONB entity querying
-- IVFFlat index for vector similarity search
-- Trigger-based timestamp management
-- Workflow state constraints
-- Consistent retry mechanism with exponential backoff
-- Sentiment score and label columns for sentiment filtering
-- JSONB column for storing extracted named entities (NER)
+- **New `transcript_chunks` table:** Stores text chunks, embeddings, timestamps, segment references (`segment_hash`), and denormalized metadata for filtering. Replaces the old `transcripts` table.
+- JSONB columns for flexible metadata storage (potentially on chunks).
+- GiST and GIN indexes for efficient text search (if applicable on chunks) and JSONB entity/metadata querying on chunks.
+- **Vector Index (e.g., IVFFlat) on `transcript_chunks.embedding`:** For efficient similarity search between query embedding and chunk embeddings.
+- Trigger-based timestamp management.
+- Workflow state constraints.
+- Consistent retry mechanism with exponential backoff.
+- Sentiment score and label columns (potentially denormalized onto chunks).
+- JSONB column for storing extracted named entities (NER) (potentially denormalized onto chunks).
 
 ### 6. Authentication & Authorization
 - Clerk for user authentication
 - Role-based access control
 - Admin-specific routes and functionality
 
-### 7. AI-Powered Search Pattern
-- **Query Understanding:** LLM (Anthropic Claude 3 Haiku via API) parses natural language queries into structured `ParsedQuery` objects (concepts, sentiment, entities, filters, relationships) using the `instructor` library. Abstraction layer (`QueryParser`) allows for future model changes.
-- **Data Enrichment (Ingestion):**
-    - **Sentiment Analysis:** Hugging Face Transformers (`cardiffnlp/twitter-roberta-base-sentiment-latest`) calculates sentiment scores/labels for each transcript segment.
-    - **Named Entity Recognition (NER):** LLM (Anthropic Claude 3 Haiku via API) extracts entities (PERSON, ORG, etc.) from each segment.
-- **Hybrid Search Logic:** Database query combines semantic search (vector similarity on concepts), full-text search (on original query), sentiment filtering (on scores), entity filtering (JSONB containment), and standard metadata filtering based on the `ParsedQuery`.
+### 7. AI-Powered Search Pattern: Direct Semantic Search via Chunking
+- **Ingestion & Chunking:**
+    - Transcripts are divided into smaller, overlapping chunks (e.g., using `langchain.text_splitter.RecursiveCharacterTextSplitter` with token-based splitting, target ~256 tokens, overlap ~50 tokens).
+    - Each chunk is embedded using a sentence transformer model (e.g., `sentence-transformers/paraphrase-MiniLM-L3-v2`).
+    - Chunks, their embeddings, original segment references (`segment_hash`), timestamps, and potentially enriched/denormalized metadata (speaker, sentiment, entities) are stored in the `transcript_chunks` table.
+- **Data Enrichment (Optional, Per Chunk):**
+    - **Sentiment Analysis:** Can be run per chunk (e.g., using Hugging Face Transformers).
+    - **Named Entity Recognition (NER):** Can be run per chunk (e.g., using LLM).
+- **Query Understanding & Filtering:**
+    - The user's full, original natural language query is embedded using the *same* sentence transformer model.
+    - An LLM (e.g., Anthropic Claude 3 Haiku via standard API client) can optionally parse the query to extract structured filters (speaker, date ranges, sentiment, entities) and other metadata, separate from the core semantic search vector.
+- **Retrieval Logic:**
+    - **Vector Search:** A vector similarity search is performed between the *query embedding* and the *chunk embeddings* stored in `transcript_chunks`.
+    - **Filtering:** Metadata filters (extracted from the query by LLM or provided via UI) are applied during or after the vector search (e.g., filtering chunks by speaker, date, sentiment score, entity presence).
+    - **Mapping & Ranking:** The top N relevant *chunks* are retrieved. These chunks are mapped back to their original, full transcript segments using the `segment_hash`. Segments are ranked based on the highest similarity score achieved by any of their constituent chunks.
+    - **Result:** The ranked list of original transcript segments is returned.
 
 ## Key Technical Decisions
 

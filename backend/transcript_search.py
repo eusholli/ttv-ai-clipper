@@ -123,13 +123,15 @@ class TranscriptSearch:
         # Use DAL to add transcripts (assuming transcripts dicts don't have new fields yet)
         self.dal.add_transcripts_batch_db(transcripts, embeddings)
 
-    def hybrid_search(self,
-                     search_text: str,
-                     filters: Optional[Dict] = None,
-                     semantic_weight: float = 0.5,
-                     limit: int = 10) -> List[Dict]:
+    # <<< NEW semantic_search implementation >>>
+    def semantic_search(self,
+                        search_text: str,
+                        filters: Optional[Dict] = None,
+                        chunk_limit: int = 20, # How many chunks to retrieve initially
+                        final_limit: int = 10) -> List[Dict]:
         """
-        Perform hybrid search using LLM query parsing and enriched index data.
+        Performs semantic search by embedding the query and finding similar chunks,
+        then maps back to original transcript segments.
 
         Args:
             search_text: The natural language text to search for.
@@ -139,66 +141,157 @@ class TranscriptSearch:
                 - date_range: Tuple[datetime, datetime]
                 - speakers: List[str]
                 - companies: List[str]
-                # Note: 'subjects' filter might be less relevant now, relying on concepts/entities.
-                - min_duration: int - Minimum duration
-                - max_duration: int - Maximum duration
-                - title: str - Filter by partial title match (case-insensitive)
-            semantic_weight: Weight given to semantic search vs full-text search (0.0 to 1.0)
-            limit: Maximum number of results to return.
+                - sentiment_label: str (e.g., 'positive', 'negative') - from query intent
+                - entities: Dict[str, List[str]] - entities mentioned in query
+                # Filters like title, duration, subjects apply to original segments,
+                # handled after retrieving segments based on chunks.
+            chunk_limit: The maximum number of relevant chunks to retrieve from the DB.
+            final_limit: The maximum number of final original segments to return.
 
         Returns:
-            List of matching transcripts with similarity scores.
+            List of matching original transcript segments, ranked by relevance,
+            with an added 'similarity' score based on the best matching chunk.
         """
-        logger.info(f"Performing hybrid search for: '{search_text}' with filters: {filters}")
+        logger.info(f"Performing search for: '{search_text}' with filters: {filters}")
 
-        # 1. Parse the natural language query using the configured parser
+        # --- Handle Filter-Only Search Case ---
+        is_filter_only_search = not search_text or search_text.isspace()
+        if is_filter_only_search and not filters:
+             logger.warning("Both search text and filters are empty. Returning empty results.")
+             return []
+
+        # 1. Parse the query to extract potential filters (even if search_text is empty, filters might be in it)
+        parsed_query: Optional[ParsedQuery] = None
         try:
-            parsed_query: ParsedQuery = self.query_parser.parse(search_text)
-            logger.debug(f"Parsed query: {parsed_query}")
+            parsed_query = self.query_parser.parse(search_text)
+            # --- Added logging to inspect parsed query ---
+            logger.info(f"--- INSPECT PARSED QUERY ---: {parsed_query.model_dump_json(indent=2)}")
+            # --- End added logging ---
+            logger.debug(f"Parsed query for filters: {parsed_query}")
         except Exception as e:
-            logger.error(f"Query parsing failed for '{search_text}': {e}", exc_info=True)
-            # Handle error appropriately - maybe return empty list or raise
-            # For now, return empty list
-            return []
+            logger.warning(f"Query parsing failed for '{search_text}', proceeding without LLM-extracted filters: {e}")
+            # Create a default ParsedQuery if parsing fails, just holding the original query
+            # Use the original search_text even if it's empty/whitespace for consistency
+            parsed_query = ParsedQuery(search_concepts=[], original_query=search_text or "")
 
-        # 2. Generate embedding for semantic search based on parsed concepts
-        # Join concepts into a single string for the encoder
-        concepts_text = " ".join(parsed_query.search_concepts) if parsed_query.search_concepts else search_text
-        try:
-            search_embedding = self.encode_text(concepts_text)
-        except Exception as e:
-            logger.error(f"Failed to encode concepts '{concepts_text}': {e}", exc_info=True)
-            return [] # Cannot perform search without embedding
+        # 2. Combine LLM-extracted filters with explicitly provided UI filters
+        combined_filters = {}
+        if parsed_query and parsed_query.filters:
+            combined_filters.update(parsed_query.filters)
+        if filters: # Merge explicit UI filters (UI filters might override LLM ones if keys clash)
+            combined_filters.update(filters)
 
-        # 3. Combine LLM-extracted filters with explicitly provided filters
-        # Explicit filters take precedence or are merged.
-        final_filters = parsed_query.filters.copy()
-        if filters: # Merge explicit filters
-            for key, value in filters.items():
-                if key in final_filters and isinstance(final_filters[key], list) and isinstance(value, list):
-                    # Merge lists and remove duplicates
-                    final_filters[key] = list(set(final_filters[key] + value))
+        # Add sentiment/entity filters from parsed query if they exist and apply to filter-only search too
+        if parsed_query:
+            if parsed_query.sentiment_intent and parsed_query.sentiment_intent not in ["objective", "unclear"]:
+                 label_map = {"positive": "positive", "negative": "negative", "neutral": "neutral",
+                              "happiest": "positive", "most_negative": "negative"}
+                 target_label = label_map.get(parsed_query.sentiment_intent)
+                 if target_label:
+                     combined_filters['sentiment_label'] = target_label
+            # REMOVED: Do not automatically add LLM-extracted entities as strict filters
+            # for the initial semantic chunk search. They might be used later for display
+            # or optional secondary filtering if needed.
+            # if parsed_query.entities:
+            #      combined_filters['entities'] = parsed_query.entities
+
+        # --- Execute Search ---
+        if is_filter_only_search:
+            # --- Filter-Only Path ---
+            logger.info("Executing filter-only search on original segments.")
+            try:
+                # Use the new DAL method for filter-only search on 'transcripts' table
+                final_results = self.dal.get_segments_by_filters_db(
+                    filters=combined_filters,
+                    limit=final_limit
+                )
+                # Add a default score for consistency with semantic search results? Optional.
+                for res in final_results:
+                    res['score'] = 0.0 # Indicate no semantic similarity calculated
+                logger.info(f"Filter-only search returned {len(final_results)} results.")
+                return final_results
+            except Exception as e:
+                logger.error(f"Filter-only search failed in database: {e}", exc_info=True)
+                return []
+        else:
+            # --- Semantic Search Path (Query Text Exists) ---
+            logger.info("Executing semantic search on chunks.")
+            # 3. Generate embedding for the query (use expanded if available)
+            try:
+                query_text_to_embed = parsed_query.original_query
+                if parsed_query.expanded_query:
+                    logger.info(f"Using expanded query for embedding: '{parsed_query.expanded_query}'")
+                    query_text_to_embed = parsed_query.expanded_query
                 else:
-                    # Overwrite or add new filter
-                    final_filters[key] = value
-        parsed_query.filters = final_filters # Update the ParsedQuery object
+                    logger.info(f"Using original query for embedding: '{parsed_query.original_query}'")
 
-        # 4. Use DAL to perform search, passing the entire ParsedQuery object
-        try:
-            # Note: The DAL method hybrid_search_db needs to be updated
-            # to accept ParsedQuery instead of individual arguments.
-            # Assuming that update happens in the next step.
-            results = self.dal.hybrid_search_db(
-                parsed_query=parsed_query, # Pass the structured query object
-                search_embedding=search_embedding,
-                semantic_weight=semantic_weight,
-                limit=limit
-            )
-            logger.info(f"Hybrid search returned {len(results)} results.")
-            return results
-        except Exception as e:
-            logger.error(f"Database search failed: {e}", exc_info=True)
-            return [] # Return empty list on database error
+                query_embedding = self.encode_text(query_text_to_embed)
+                if not query_embedding:
+                     raise ValueError("Generated query embedding is empty.")
+            except Exception as e:
+                logger.error(f"Failed to encode query text '{parsed_query.original_query}': {e}", exc_info=True)
+                return [] # Cannot perform search without query embedding
+
+            logger.debug(f"Combined filters for chunk search: {combined_filters}")
+
+            # 4. Search for relevant chunks in the database
+            try:
+                relevant_chunks = self.dal.search_relevant_chunks_db(
+                    query_embedding=query_embedding,
+                    filters=combined_filters, # Pass combined filters here
+                    limit=chunk_limit
+                )
+            except Exception as e:
+                logger.error(f"Chunk search failed in database: {e}", exc_info=True)
+                return []
+
+            if not relevant_chunks:
+                logger.info("No relevant chunks found.")
+                return []
+
+            # 5. Map chunks back to unique original segments and determine best score per segment
+            segment_scores = {} # {segment_hash: best_similarity}
+            unique_segment_hashes = []
+            for chunk in relevant_chunks:
+                seg_hash = chunk['segment_hash']
+                similarity = chunk['similarity']
+                if seg_hash not in segment_scores:
+                    segment_scores[seg_hash] = similarity
+                    unique_segment_hashes.append(seg_hash)
+                else:
+                    # Update score if this chunk is more similar
+                    segment_scores[seg_hash] = max(segment_scores[seg_hash], similarity)
+
+            logger.info(f"Found {len(relevant_chunks)} relevant chunks mapping to {len(unique_segment_hashes)} unique segments.")
+
+            # 6. Retrieve full original segment data
+            try:
+                original_segments_map = self.dal.get_segments_by_hashes_batch_db(unique_segment_hashes)
+            except Exception as e:
+                 logger.error(f"Failed to retrieve original segments: {e}", exc_info=True)
+                 return [] # Cannot return results without original segment data
+
+            # 7. Combine original segment data with similarity scores and apply final ranking/limit
+            final_results = []
+            for seg_hash in unique_segment_hashes:
+                if seg_hash in original_segments_map:
+                    segment_data = original_segments_map[seg_hash]
+                    # Add the best similarity score found for this segment
+                    segment_data['similarity'] = segment_scores.get(seg_hash, 0.0)
+                    final_results.append(segment_data)
+                else:
+                    logger.warning(f"Original segment data not found for hash: {seg_hash}")
+
+            # Sort final results by similarity score
+            final_results.sort(key=lambda x: x.get('similarity', 0.0), reverse=True)
+
+            # Apply final limit
+            final_results = final_results[:final_limit]
+
+            logger.info(f"Semantic search returning {len(final_results)} final results.")
+            return final_results
+    # <<< END NEW semantic_search implementation >>>
+
 
     def get_metadata_by_hash(self, segment_hash: str) -> Optional[Dict]:
         """

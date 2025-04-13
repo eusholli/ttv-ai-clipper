@@ -5,8 +5,9 @@ Centralizes all database operations and connection management.
 """
 
 import psycopg2
+from psycopg2 import extensions # Import extensions for isolation levels
 from psycopg2.extras import execute_values, Json
-from psycopg2.pool import ThreadedConnectionPool
+from psycopg2.pool import ThreadedConnectionPool, PoolError # Import PoolError
 from contextlib import contextmanager
 from functools import wraps
 import time
@@ -38,16 +39,39 @@ def with_retry(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         last_error = None
+        db_manager = None
+        
+        # Find the DatabaseManager instance in args (usually self)
+        for arg in args:
+            if isinstance(arg, DatabaseManager):
+                db_manager = arg
+                break
+        
         for attempt in range(MAX_RETRIES):
             try:
+                # Try to execute the function
                 return func(*args, **kwargs)
             except RETRY_ERRORS as e:
                 last_error = e
                 if attempt < MAX_RETRIES - 1:
                     delay = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
                     logger.warning(f"Database operation failed, retrying in {delay}s: {str(e)}")
+                    
+                    # If this is a connection-related error and we have access to the DB manager,
+                    # try refreshing the pools before the next attempt
+                    if db_manager and (
+                        isinstance(e, psycopg2.OperationalError) or 
+                        isinstance(e, psycopg2.InterfaceError)
+                    ) and "connection" in str(e).lower():
+                        try:
+                            logger.info("Attempting to refresh connection pools before retry")
+                            db_manager.refresh_pools()
+                        except Exception as refresh_error:
+                            logger.error(f"Failed to refresh connection pools: {refresh_error}")
+                    
                     time.sleep(delay)
                     continue
+                    
         # If all retries fail, raise the last encountered error
         logger.error(f"Database operation failed after {MAX_RETRIES} attempts: {last_error}")
         raise last_error
@@ -183,50 +207,194 @@ class DatabaseManager:
 
     @contextmanager
     def get_read_conn(self):
-        """Context manager for getting a read-only connection with proper isolation"""
+        """Context manager for getting a read-only connection with proper isolation and retry"""
         conn = None
+        last_conn_error = None
+        MAX_GET_CONN_RETRIES = 3 # Number of times to try getting a live connection
+
+        for attempt in range(MAX_GET_CONN_RETRIES):
+            conn = None # Ensure conn is None at start of each attempt
+            try:
+                conn = self._read_pool.getconn()
+                # Basic check if connection object seems valid
+                if conn.closed:
+                   raise psycopg2.OperationalError("Connection pool returned a closed connection.")
+                
+                # Verify connection is actually alive with a simple query
+                with conn.cursor() as test_cur:
+                    test_cur.execute("SELECT 1")
+                    test_cur.fetchone()
+                
+                # If getconn succeeds and connection test passes, break the loop
+                logger.debug(f"Successfully obtained live read connection on attempt {attempt + 1}")
+                last_conn_error = None # Reset error on success
+                break
+            except (psycopg2.OperationalError, psycopg2.InterfaceError, PoolError) as conn_err:
+                # This catches errors during getconn or connection test
+                last_conn_error = conn_err
+                logger.warning(f"Read connection attempt {attempt + 1} failed (likely closed): {conn_err}. Retrying...")
+                if conn:
+                    try:
+                        # Ensure the faulty connection is closed client-side
+                        conn.close()
+                    except Exception as close_exc:
+                         logger.error(f"Error closing faulty read connection during retry: {close_exc}")
+                    conn = None # Reset conn variable
+                if attempt == MAX_GET_CONN_RETRIES - 1:
+                    logger.error("Max retries reached for getting a live read connection.")
+                    raise PoolError(f"Failed to get a live read connection after {MAX_GET_CONN_RETRIES} attempts: {last_conn_error}") from last_conn_error
+                time.sleep(0.1 * (attempt + 1)) # Small delay before retrying getconn
+
+        # If we exit the loop without a valid connection (should be caught by the raise above, but as safety)
+        if conn is None or conn.closed:
+             raise PoolError(f"Failed to get a live read connection: {last_conn_error}") from last_conn_error
+
+        # Proceed with the obtained connection, setting timeout
         try:
-            conn = self._read_pool.getconn()
+            # Set timeout for this session using a cursor
             with conn.cursor() as cur:
-                # Set read committed isolation level for consistent reads
-                cur.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
-                # Set statement timeout to prevent long waits
-                cur.execute('SET LOCAL statement_timeout = 5000')  # 5 seconds
-            yield conn
-        except Exception as e:
-            logger.error(f"Database read connection error: {str(e)}")
-            # Ensure connection is returned even on error during setup
+                cur.execute('SET LOCAL statement_timeout = 5000')
+            logger.debug("Read connection timeout set.")
+            yield conn # Yield the configured connection
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as conn_err:
+            # Catch connection errors during timeout setting or usage
+            logger.error(f"Database read connection error (likely closed): {str(conn_err)}")
             if conn is not None:
-                self._read_pool.putconn(conn)
-            raise
+                try:
+                    # Explicitly close the connection on the client side
+                    conn.close()
+                    logger.info("Closed faulty read connection.")
+                except Exception as close_exc:
+                    logger.error(f"Error closing faulty read connection: {close_exc}")
+                # We don't return it to the pool, let the pool manage replacement
+            raise conn_err # Re-raise the specific connection error
+        except Exception as e:
+            # Catch other potential errors during setup
+            logger.error(f"Unexpected error during read connection setup: {str(e)}")
+            # Ensure connection is handled correctly even on error during setup
+            if conn is not None:
+                try:
+                    if conn.closed:
+                        logger.warning("Read connection was closed during error handling. Discarding.")
+                        # Don't return closed connection
+                    else:
+                        # Try to return the connection if it's still open
+                        self._read_pool.putconn(conn)
+                except Exception as pool_exc:
+                    logger.error(f"Error returning read connection to pool during exception handling: {pool_exc}")
+                    # If putconn fails here, just discard
+                    pass
+            raise # Re-raise the original exception
         finally:
             if conn is not None:
-                # Ensure connection is returned after use
-                self._read_pool.putconn(conn)
+                try:
+                    # Check if the connection is closed before returning
+                    if conn.closed:
+                        logger.warning("Read connection was closed before returning to pool. Discarding.")
+                    else:
+                        # Ensure connection is returned after use if it's still open
+                        self._read_pool.putconn(conn)
+                except Exception as pool_exc:
+                    # Log errors during putconn, but don't let them mask the original error
+                    logger.error(f"Error returning read connection to pool: {pool_exc}")
+                    pass
 
 
     @contextmanager
     def get_write_conn(self):
-        """Context manager for getting a write connection with proper isolation"""
+        """Context manager for getting a write connection with proper isolation and retry"""
         conn = None
+        last_conn_error = None
+        MAX_GET_CONN_RETRIES = 3 # Number of times to try getting a live connection
+
+        for attempt in range(MAX_GET_CONN_RETRIES):
+            conn = None # Ensure conn is None at start of each attempt
+            try:
+                conn = self._write_pool.getconn()
+                # Basic check if connection object seems valid
+                if conn.closed:
+                    raise psycopg2.OperationalError("Connection pool returned a closed connection.")
+                
+                # Verify connection is actually alive with a simple query
+                with conn.cursor() as test_cur:
+                    test_cur.execute("SELECT 1")
+                    test_cur.fetchone()
+                
+                # If getconn succeeds and connection test passes, break the loop
+                logger.debug(f"Successfully obtained live write connection on attempt {attempt + 1}")
+                last_conn_error = None # Reset error on success
+                break
+            except (psycopg2.OperationalError, psycopg2.InterfaceError, PoolError) as conn_err:
+                # This catches errors during getconn or connection test
+                last_conn_error = conn_err
+                logger.warning(f"Write connection attempt {attempt + 1} failed (likely closed): {conn_err}. Retrying...")
+                if conn:
+                    try:
+                        # Ensure the faulty connection is closed client-side
+                        conn.close()
+                    except Exception as close_exc:
+                         logger.error(f"Error closing faulty write connection during retry: {close_exc}")
+                    conn = None # Reset conn variable
+                if attempt == MAX_GET_CONN_RETRIES - 1:
+                    logger.error("Max retries reached for getting a live write connection.")
+                    raise PoolError(f"Failed to get a live write connection after {MAX_GET_CONN_RETRIES} attempts: {last_conn_error}") from last_conn_error
+                time.sleep(0.1 * (attempt + 1)) # Small delay before retrying getconn
+
+        # If we exit the loop without a valid connection (should be caught by the raise above, but as safety)
+        if conn is None or conn.closed:
+             raise PoolError(f"Failed to get a live write connection: {last_conn_error}") from last_conn_error
+
+        # Proceed with the obtained connection, setting timeout
         try:
-            conn = self._write_pool.getconn()
+            # Set timeout for this session using a cursor
             with conn.cursor() as cur:
-                # Set repeatable read isolation level for write operations
-                cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-                # Set longer timeout for write operations
-                cur.execute('SET LOCAL statement_timeout = 30000')  # 30 seconds
-            yield conn
-        except Exception as e:
-            logger.error(f"Database write connection error: {str(e)}")
-            # Ensure connection is returned even on error during setup
+                cur.execute('SET LOCAL statement_timeout = 30000')
+            logger.debug("Write connection timeout set.")
+            yield conn # Yield the configured connection
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as conn_err:
+             # Catch connection errors during timeout setting or usage
+            logger.error(f"Database write connection error (likely closed): {str(conn_err)}")
             if conn is not None:
-                self._write_pool.putconn(conn)
-            raise
+                try:
+                    # Explicitly close the connection on the client side
+                    conn.close()
+                    logger.info("Closed faulty write connection.")
+                except Exception as close_exc:
+                    logger.error(f"Error closing faulty write connection: {close_exc}")
+                # We don't return it to the pool
+            raise conn_err # Re-raise the specific connection error
+        except Exception as e:
+            # Catch other potential errors during setup
+            logger.error(f"Unexpected error during write connection setup: {str(e)}")
+            # Ensure connection is handled correctly even on error during setup
+            if conn is not None:
+                try:
+                    if conn.closed:
+                        logger.warning("Write connection was closed during error handling. Discarding.")
+                    else:
+                        self._write_pool.putconn(conn)
+                except Exception as pool_exc:
+                    logger.error(f"Error returning write connection to pool during exception handling: {pool_exc}")
+                    pass
+            raise # Re-raise the original exception
         finally:
             if conn is not None:
-                 # Ensure connection is returned after use
-                self._write_pool.putconn(conn)
+                try:
+                    # Check if the connection is closed before returning
+                    if conn.closed:
+                        logger.warning("Write connection was closed before returning to pool. Discarding.")
+                        # Optionally, you might want to signal the pool to replace this connection
+                        # self._write_pool.putconn(conn, close=True) # This might be needed depending on pool behavior with closed connections
+                    else:
+                        # Ensure connection is returned after use if it's still open
+                        self._write_pool.putconn(conn)
+                except Exception as pool_exc:
+                    # Log errors during putconn, but don't let them mask the original error
+                    logger.error(f"Error returning write connection to pool: {pool_exc}")
+                    # If the original exception was the connection closure, this might still fail
+                    # Consider simply discarding the connection if putconn fails after it was found closed
+                    pass
+
 
     def close_pools(self):
         """Close all connection pools"""
@@ -237,6 +405,62 @@ class DatabaseManager:
             self._write_pool.closeall()
             self._write_pool = None
         logger.info("Database connection pools closed")
+        
+    def refresh_pools(self):
+        """Refresh connection pools by closing and recreating them"""
+        logger.info("Refreshing database connection pools")
+        self.close_pools()
+        self._read_pool = self._create_read_pool()
+        self._write_pool = self._create_write_pool()
+        logger.info("Database connection pools refreshed")
+        
+    def validate_connection(self, conn):
+        """Test if a connection is valid and alive"""
+        if conn is None or conn.closed:
+            return False
+            
+        try:
+            # Execute a simple query to verify the connection is alive
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            return True
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            return False
+            
+    @with_retry
+    def execute_long_running_operation(self, operation_func, *args, **kwargs):
+        """
+        Execute a long-running operation with connection validation and refresh.
+        This is particularly useful for operations like transcript editing that may
+        take a long time and risk connection timeouts.
+        
+        Args:
+            operation_func: The function to execute (should accept a connection as first arg)
+            *args: Additional arguments to pass to the operation function
+            **kwargs: Additional keyword arguments to pass to the operation function
+            
+        Returns:
+            The result of the operation function
+        """
+        # Get a fresh write connection
+        with self.get_write_conn() as conn:
+            try:
+                # Set a longer statement timeout for this operation
+                with conn.cursor() as cur:
+                    cur.execute('SET LOCAL statement_timeout = 120000')  # 2 minutes
+                
+                # Execute the operation with the connection and other args
+                return operation_func(conn, *args, **kwargs)
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                # If we get a connection error, try to refresh the pools
+                logger.warning(f"Connection error during long-running operation: {e}")
+                try:
+                    self.refresh_pools()
+                except Exception as refresh_error:
+                    logger.error(f"Failed to refresh connection pools: {refresh_error}")
+                # Re-raise the original error to trigger retry via @with_retry
+                raise e
 
     #
     # Transcript Search Operations
@@ -320,7 +544,7 @@ class DatabaseManager:
                     ))
 
                 try:
-                    # Note the updated template for new columns
+                    # First try batch insert for efficiency
                     execute_values(
                         cur,
                         '''
@@ -336,6 +560,70 @@ class DatabaseManager:
                         template='''(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('english', %s), %s, %s, %s)'''
                     )
                     conn.commit()
+                    logger.info(f"Successfully inserted {len(data)} transcripts in batch mode")
+                except psycopg2.errors.UniqueViolation as e:
+                    # If we hit a duplicate key, rollback the batch operation
+                    conn.rollback()
+                    logger.warning(f"Batch insert failed due to duplicate key: {e}. Switching to individual insert mode.")
+                    
+                    # Fall back to individual inserts to handle duplicates
+                    successful_inserts = 0
+                    failed_inserts = 0
+                    
+                    for i, (transcript, embedding) in enumerate(zip(transcripts, embeddings)):
+                        try:
+                            # Ensure entities is suitable for JSONB
+                            entities_data = transcript.get('entities')
+                            entities_json = Json(entities_data) if entities_data is not None else None
+                            
+                            # Insert individual transcript
+                            cur.execute('''
+                                INSERT INTO transcripts (
+                                    segment_hash, title, date, youtube_id, source, speaker, company,
+                                    start_time, end_time, duration, subjects, download, text,
+                                    text_vector, search_vector,
+                                    sentiment_score, sentiment_label, entities
+                                )
+                                VALUES (
+                                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, 
+                                    to_tsvector('english', %s), %s, %s, %s
+                                )
+                            ''', (
+                                transcript['segment_hash'],
+                                transcript['title'],
+                                transcript['date'],
+                                transcript['youtube_id'],
+                                transcript['source'],
+                                transcript['speaker'],
+                                transcript.get('company'),
+                                transcript.get('start_time'),
+                                transcript.get('end_time'),
+                                transcript.get('duration'),
+                                transcript.get('subjects'),
+                                transcript.get('download'),
+                                transcript['text'],
+                                embedding,
+                                # Concatenate fields for full-text search
+                                f"{transcript.get('title', '')} {transcript.get('speaker', '')} {transcript.get('company', '')} {transcript.get('text', '')}",
+                                # New fields
+                                transcript.get('sentiment_score'),
+                                transcript.get('sentiment_label'),
+                                entities_json
+                            ))
+                            conn.commit()
+                            successful_inserts += 1
+                        except psycopg2.errors.UniqueViolation as dup_err:
+                            # Log the duplicate and continue with next transcript
+                            conn.rollback()
+                            failed_inserts += 1
+                            logger.error(f"Skipping duplicate transcript with segment_hash={transcript['segment_hash']}: {dup_err}")
+                        except Exception as other_err:
+                            # Log other errors but continue processing
+                            conn.rollback()
+                            failed_inserts += 1
+                            logger.error(f"Error inserting transcript {i} with segment_hash={transcript['segment_hash']}: {other_err}")
+                    
+                    logger.info(f"Individual insert mode completed: {successful_inserts} successful, {failed_inserts} failed")
                 except Exception as e:
                     conn.rollback()
                     logger.error(f"Error adding batch transcripts: {e}")
@@ -463,12 +751,15 @@ class DatabaseManager:
         # This is separate from the explicit speaker/company filters above.
         if parsed_query.entities:
             for entity_type, entity_list in parsed_query.entities.items():
-                if entity_list and isinstance(entity_list, list): # Ensure it's a non-empty list
-                    # Construct the JSONB object string for the query for this specific type
-                    # Check if the entities column contains the specified entities
-                    jsonb_filter = json.dumps({entity_type: entity_list})
-                    where_clauses.append('entities @> %s::jsonb')
-                    params.append(jsonb_filter)
+                 if entity_list and isinstance(entity_list, list): # Ensure it's a non-empty list
+                     # Convert query entities to lowercase for matching
+                     lower_entity_list = [e.lower() for e in entity_list if isinstance(e, str)]
+                     if not lower_entity_list: continue # Skip if list becomes empty after filtering non-strings
+                     # Construct the JSONB object string for the query for this specific type
+                     # Check if the entities column contains the specified entities
+                     jsonb_filter = json.dumps({entity_type: lower_entity_list})
+                     where_clauses.append('entities @> %s::jsonb')
+                     params.append(jsonb_filter)
 
         # 4. Relationship Filtering (Basic Example: Check if concepts appear in text using FTS)
         # --- Apply ONLY if search text exists ---
@@ -547,9 +838,416 @@ class DatabaseManager:
         return formatted_results
     # <<< END REVISED hybrid_search_db implementation >>>
 
+    # <<< NEW: Method to add chunks >>>
+    @with_retry
+    def add_transcript_chunks_batch_db(self, chunks_data: List[Dict[str, Any]]):
+        """
+        Batch insert multiple transcript chunks into the transcript_chunks table.
+
+        Args:
+            chunks_data: A list of dictionaries, where each dictionary represents a chunk
+                         and contains keys matching the transcript_chunks table columns
+                         (segment_hash, youtube_id, chunk_text, chunk_vector,
+                          original_segment_start_time, original_segment_end_time,
+                          speaker, company, date, sentiment_score, sentiment_label, entities).
+                         'entities' should be a dict or None. 'chunk_vector' should be a list of floats.
+        """
+        with self.get_write_conn() as conn:
+            with conn.cursor() as cur:
+                # Prepare data tuples for batch insert
+                data_tuples = []
+                for chunk in chunks_data:
+                    entities_json = Json(chunk.get('entities')) if chunk.get('entities') is not None else None
+                    data_tuples.append((
+                        chunk['segment_hash'],
+                        chunk['youtube_id'],
+                        chunk['chunk_text'],
+                        chunk['chunk_vector'], # Pass as list, cast in template
+                        chunk['original_segment_start_time'],
+                        chunk['original_segment_end_time'],
+                        chunk.get('speaker'),
+                        chunk.get('company'),
+                        chunk.get('date'),
+                        chunk.get('sentiment_score'),
+                        chunk.get('sentiment_label'),
+                        entities_json
+                    ))
+
+                try:
+                    # First try batch insert for efficiency
+                    execute_values(
+                        cur,
+                        '''
+                        INSERT INTO transcript_chunks (
+                            segment_hash, youtube_id, chunk_text, chunk_vector,
+                            original_segment_start_time, original_segment_end_time,
+                            speaker, company, date,
+                            sentiment_score, sentiment_label, entities
+                        )
+                        VALUES %s
+                        ''',
+                        data_tuples,
+                        template='(%s, %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s, %s)'
+                    )
+                    conn.commit()
+                    logger.info(f"Successfully inserted {len(data_tuples)} chunks into transcript_chunks.")
+                except psycopg2.errors.UniqueViolation as e:
+                    # If we hit a duplicate key, rollback the batch operation
+                    conn.rollback()
+                    logger.warning(f"Batch insert of chunks failed due to duplicate key: {e}. Switching to individual insert mode.")
+                    
+                    # Fall back to individual inserts to handle duplicates
+                    successful_inserts = 0
+                    failed_inserts = 0
+                    
+                    for i, chunk in enumerate(chunks_data):
+                        try:
+                            # Ensure entities is suitable for JSONB
+                            entities_json = Json(chunk.get('entities')) if chunk.get('entities') is not None else None
+                            
+                            # Insert individual chunk
+                            cur.execute('''
+                                INSERT INTO transcript_chunks (
+                                    segment_hash, youtube_id, chunk_text, chunk_vector,
+                                    original_segment_start_time, original_segment_end_time,
+                                    speaker, company, date,
+                                    sentiment_score, sentiment_label, entities
+                                )
+                                VALUES (
+                                    %s, %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s, %s
+                                )
+                            ''', (
+                                chunk['segment_hash'],
+                                chunk['youtube_id'],
+                                chunk['chunk_text'],
+                                chunk['chunk_vector'],
+                                chunk['original_segment_start_time'],
+                                chunk['original_segment_end_time'],
+                                chunk.get('speaker'),
+                                chunk.get('company'),
+                                chunk.get('date'),
+                                chunk.get('sentiment_score'),
+                                chunk.get('sentiment_label'),
+                                entities_json
+                            ))
+                            conn.commit()
+                            successful_inserts += 1
+                        except psycopg2.errors.UniqueViolation as dup_err:
+                            # Log the duplicate and continue with next chunk
+                            conn.rollback()
+                            failed_inserts += 1
+                            logger.error(f"Skipping duplicate chunk with segment_hash={chunk['segment_hash']}: {dup_err}")
+                        except Exception as other_err:
+                            # Log other errors but continue processing
+                            conn.rollback()
+                            failed_inserts += 1
+                            logger.error(f"Error inserting chunk {i} with segment_hash={chunk['segment_hash']}: {other_err}")
+                    
+                    logger.info(f"Individual chunk insert mode completed: {successful_inserts} successful, {failed_inserts} failed")
+                except Exception as e:
+                    conn.rollback()
+                    logger.error(f"Error adding batch transcript chunks: {e}", exc_info=True)
+                    raise e
+    # <<< END NEW: Method to add chunks >>>
+
+    # <<< NEW: Method to get original segments by hash >>>
+    @with_retry
+    def get_segments_by_hashes_batch_db(self, segment_hashes: List[str]) -> Dict[str, Dict]:
+        """
+        Retrieve full original transcript segments based on a list of segment hashes.
+
+        Args:
+            segment_hashes: A list of segment_hash strings.
+
+        Returns:
+            A dictionary mapping segment_hash to the full segment data dictionary.
+            Returns empty dict if no hashes provided or no segments found.
+        """
+        if not segment_hashes:
+            return {}
+
+        with self.get_read_conn() as conn:
+            with conn.cursor() as cur:
+                # Query the original transcripts table
+                cur.execute('''
+                    SELECT
+                        segment_hash, title, date, youtube_id, source, speaker, company,
+                        start_time, end_time, duration, subjects, download, text,
+                        sentiment_score, sentiment_label, entities
+                    FROM transcripts -- Querying the original table
+                    WHERE segment_hash = ANY(%s)
+                ''', (segment_hashes,)) # Pass list directly for = ANY()
+
+                results = cur.fetchall()
+
+        # Format results into a dictionary keyed by segment_hash
+        formatted_results = {}
+        if results:
+            column_names = [
+                'segment_hash', 'title', 'date', 'youtube_id', 'source', 'speaker', 'company',
+                'start_time', 'end_time', 'duration', 'subjects', 'download', 'text',
+                'sentiment_score', 'sentiment_label', 'entities'
+            ]
+            for row in results:
+                segment_data = dict(zip(column_names, row))
+                formatted_results[segment_data['segment_hash']] = segment_data
+
+        logger.debug(f"Retrieved {len(formatted_results)} original segments for {len(segment_hashes)} requested hashes.")
+        return formatted_results
+    # <<< END NEW: Method to get original segments by hash >>>
+
+    # <<< NEW: Method to search chunks >>>
+    @with_retry
+    def search_relevant_chunks_db(self, query_embedding: List[float], filters: Dict[str, Any], limit: int = 20) -> List[Dict]:
+        """
+        Performs a filtered vector search on the transcript_chunks table.
+
+        Args:
+            query_embedding: The embedding vector of the user's query.
+            filters: A dictionary containing filter criteria (e.g., speaker, company, date_range,
+                     sentiment_label, entities).
+            limit: The maximum number of chunks to retrieve.
+
+        Returns:
+            A list of dictionaries, each representing a relevant chunk including its
+            segment_hash, similarity score, and other stored metadata.
+        """
+        if not query_embedding:
+            logger.warning("Cannot perform chunk search without a query embedding.")
+            return []
+
+        select_columns = """
+            chunk_id,
+            segment_hash,
+            youtube_id,
+            chunk_text,
+            original_segment_start_time,
+            original_segment_end_time,
+            speaker,
+            company,
+            date,
+            sentiment_score,
+            sentiment_label,
+            entities,
+            (1 - (chunk_vector <=> %s::vector)) as similarity
+        """
+        from_clause = "FROM transcript_chunks"
+        where_conditions = [] # Store actual conditions here
+        params = [query_embedding] # Similarity param comes first
+
+        # --- Apply Filters ---
+        if filters:
+            # Date Range
+            if 'date_range' in filters and filters['date_range'] and len(filters['date_range']) == 2:
+                where_conditions.append('date BETWEEN %s AND %s')
+                params.extend([filters['date_range'][0], filters['date_range'][1]])
+
+            # Speaker(s)
+            speaker_filters = filters.get('speakers')
+            if speaker_filters and isinstance(speaker_filters, list) and speaker_filters:
+                 where_conditions.append('speaker = ANY(%s)')
+                 params.append(speaker_filters)
+
+            # Company(s)
+            company_filters = filters.get('companies')
+            if company_filters and isinstance(company_filters, list) and company_filters:
+                 where_conditions.append('company = ANY(%s)')
+                 params.append(company_filters)
+
+            # Title (Note: Title is on original segment, not chunk. Filter during segment retrieval?)
+            # If title filtering is needed here, it must be denormalized onto transcript_chunks.
+            # For now, assuming title filter happens after retrieving segments.
+
+            # Duration (Note: Duration is on original segment. Filter during segment retrieval?)
+            # If needed here, original_segment_duration could be denormalized or calculated.
+
+            # Sentiment Label (from query intent)
+            if 'sentiment_label' in filters and filters['sentiment_label']:
+                 where_conditions.append('sentiment_label = %s')
+                 params.append(filters['sentiment_label'])
+
+            # Entities (from query entities)
+            if 'entities' in filters and filters['entities']:
+                 for entity_type, entity_list in filters['entities'].items():
+                     if entity_list and isinstance(entity_list, list):
+                          # Convert query entities to lowercase for matching
+                          lower_entity_list = [e.lower() for e in entity_list if isinstance(e, str)]
+                          if not lower_entity_list: continue # Skip if list becomes empty
+                          jsonb_filter = json.dumps({entity_type: lower_entity_list})
+                          where_conditions.append('entities @> %s::jsonb')
+                          params.append(jsonb_filter)
+
+        # --- Combine Query ---
+        query = f"SELECT {select_columns}\n{from_clause}"
+        if where_conditions:
+            # Only add WHERE clause if there are actual conditions
+            query += "\nWHERE " + " AND ".join(where_conditions)
+
+        # Order by similarity and limit
+        query += "\nORDER BY similarity DESC"
+        query += "\nLIMIT %s;"
+        params.append(limit)
+
+        logger.debug(f"Executing chunk search query: {query}")
+        # logger.debug(f"Chunk search params: {params}") # Avoid logging embedding
+
+        # Execute search
+        with self.get_read_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                results = cur.fetchall()
+
+        # --- Format Results ---
+        formatted_results = []
+        if results:
+            column_names = [
+                'chunk_id', 'segment_hash', 'youtube_id', 'chunk_text',
+                'original_segment_start_time', 'original_segment_end_time',
+                'speaker', 'company', 'date',
+                'sentiment_score', 'sentiment_label', 'entities',
+                'similarity'
+            ]
+            if len(results[0]) != len(column_names):
+                 logger.error(f"Chunk search column count mismatch. Expected {len(column_names)}, got {len(results[0])}.")
+                 # Handle error - maybe return raw rows or raise
+                 return [list(row) for row in results]
+            else:
+                for row in results:
+                    formatted_results.append(dict(zip(column_names, row)))
+
+        logger.info(f"Chunk search returned {len(formatted_results)} relevant chunks.")
+        return formatted_results
+    # <<< END NEW: Method to search chunks >>>
+
+    # <<< NEW: Method for Filter-Only Search on Original Segments (Corrected Indentation) >>>
+    @with_retry
+    def get_segments_by_filters_db(self, filters: Dict[str, Any], limit: int = 10) -> List[Dict]:
+        """
+        Retrieves original transcript segments based solely on metadata filters.
+
+        Args:
+            filters: A dictionary containing filter criteria (e.g., speaker, company, date_range,
+                     sentiment_label, entities, title, duration).
+            limit: The maximum number of segments to return.
+
+        Returns:
+            A list of dictionaries, each representing an original transcript segment
+            matching the filters, ordered by date descending.
+        """
+        select_columns = """
+            segment_hash, title, date, youtube_id, source, speaker, company,
+            start_time, end_time, duration, subjects, download, text,
+            sentiment_score, sentiment_label, entities
+        """
+        from_clause = "FROM transcripts" # Querying the original table
+        where_conditions = [] # Store actual conditions here
+        params = []
+
+        # --- Apply Filters (similar to hybrid_search_db but on transcripts table) ---
+        if filters:
+            # Date Range
+            if 'date_range' in filters and filters['date_range'] and len(filters['date_range']) == 2:
+                where_conditions.append('date BETWEEN %s AND %s')
+                params.extend([filters['date_range'][0], filters['date_range'][1]])
+
+            # Speaker(s)
+            speaker_filters = filters.get('speakers')
+            if speaker_filters and isinstance(speaker_filters, list) and speaker_filters:
+                 where_conditions.append('speaker = ANY(%s)')
+                 params.append(speaker_filters)
+
+            # Company(s)
+            company_filters = filters.get('companies')
+            if company_filters and isinstance(company_filters, list) and company_filters:
+                 where_conditions.append('company = ANY(%s)')
+                 params.append(company_filters)
+
+            # Title (Exact match or ILIKE depending on UI filter needs)
+            if 'title' in filters and filters['title']:
+                 # Assuming UI filter provides partial title match
+                 where_conditions.append('title ILIKE %s')
+                 params.append(f'%{filters["title"]}%')
+
+            # Duration
+            if 'min_duration' in filters and filters['min_duration'] is not None:
+                try:
+                    where_conditions.append('duration >= %s')
+                    params.append(int(filters['min_duration']))
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid min_duration filter value: {filters['min_duration']}")
+            if 'max_duration' in filters and filters['max_duration'] is not None:
+                try:
+                    where_conditions.append('duration <= %s')
+                    params.append(int(filters['max_duration']))
+                except (ValueError, TypeError):
+                     logger.warning(f"Invalid max_duration filter value: {filters['max_duration']}")
+
+            # Subjects (Array overlap)
+            if 'subjects' in filters and filters['subjects'] and isinstance(filters['subjects'], list):
+                where_conditions.append('subjects && %s::TEXT[]')
+                params.append(filters['subjects'])
+
+            # Sentiment Label
+            if 'sentiment_label' in filters and filters['sentiment_label']:
+                 where_conditions.append('sentiment_label = %s')
+                 params.append(filters['sentiment_label'])
+
+             # Entities (JSONB containment)
+            if 'entities' in filters and filters['entities']:
+                 for entity_type, entity_list in filters['entities'].items():
+                     if entity_list and isinstance(entity_list, list):
+                          # Convert query entities to lowercase for matching
+                          lower_entity_list = [e.lower() for e in entity_list if isinstance(e, str)]
+                          if not lower_entity_list: continue # Skip if list becomes empty
+                          jsonb_filter = json.dumps({entity_type: lower_entity_list})
+                          where_conditions.append('entities @> %s::jsonb')
+                          params.append(jsonb_filter)
+
+        # --- Combine Query ---
+        query = f"SELECT {select_columns}\n{from_clause}"
+        if where_conditions:
+            # Only add WHERE clause if there are actual conditions
+            query += "\nWHERE " + " AND ".join(where_conditions)
+
+        # Default ordering for filter-only search
+        query += "\nORDER BY date DESC NULLS LAST, start_time ASC NULLS LAST"
+        query += "\nLIMIT %s;"
+        params.append(limit)
+
+        logger.debug(f"Executing filter-only segment search query: {query}")
+        # logger.debug(f"Filter-only search params: {params}")
+
+        # Execute search
+        with self.get_read_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                results = cur.fetchall()
+
+        # --- Format Results ---
+        formatted_results = []
+        if results:
+            column_names = [
+                'segment_hash', 'title', 'date', 'youtube_id', 'source', 'speaker', 'company',
+                'start_time', 'end_time', 'duration', 'subjects', 'download', 'text',
+                'sentiment_score', 'sentiment_label', 'entities'
+            ]
+            # Check column count before zipping
+            if results and len(results[0]) != len(column_names):
+                 logger.error(f"Filter-only search column count mismatch. Expected {len(column_names)}, got {len(results[0])}.")
+                 # Handle error - maybe return raw rows or raise
+                 return [list(row) for row in results]
+            else:
+                for row in results:
+                    formatted_results.append(dict(zip(column_names, row)))
+
+        logger.info(f"Filter-only search returned {len(formatted_results)} segments.")
+        return formatted_results
+    # <<< END NEW: Method for Filter-Only Search >>>
+
+
     @with_retry
     def get_metadata_by_hash_db(self, segment_hash):
-        """Get metadata for a specific segment by its hash, including new fields."""
+        """Get metadata for a specific segment by its hash from the original transcripts table."""
         with self.get_read_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
@@ -557,7 +1255,7 @@ class DatabaseManager:
                         segment_hash, title, date, youtube_id, source, speaker, company,
                         start_time, end_time, duration, subjects, download, text,
                         sentiment_score, sentiment_label, entities
-                    FROM transcripts
+                    FROM transcripts -- Querying the original table
                     WHERE segment_hash = %s
                 ''', (segment_hash,))
 
@@ -601,16 +1299,18 @@ class DatabaseManager:
                 cur.execute('SELECT DISTINCT company FROM transcripts WHERE company IS NOT NULL ORDER BY company')
                 companies = [row[0] for row in cur.fetchall()]
 
-                # Get unique subjects (consider deprecating if not used)
-                cur.execute('SELECT DISTINCT unnest(subjects) FROM transcripts WHERE subjects IS NOT NULL ORDER BY 1')
-                subjects = [row[0] for row in cur.fetchall()]
+                # Get unique subjects
+                cur.execute("SELECT DISTINCT lower(unnest(subjects)) as subject FROM transcripts WHERE subjects IS NOT NULL AND subjects <> '{}' ORDER BY subject;")
+                subjects_list = [row[0] for row in cur.fetchall()]
+                # Convert the list to the desired dictionary format {subject: subject}
+                subjects_dict = {subject: subject for subject in subjects_list}
 
                 return {
                     "speakers": speakers,
                     "dates": dates,
                     "titles": titles,
                     "companies": companies,
-                    "subjects": subjects
+                    "subjects": subjects_dict # Use the dictionary here
                 }
 
     #
@@ -792,7 +1492,12 @@ class DatabaseManager:
 
     @with_retry
     def update_content_db(self, job_id, content):
-        """Update transcript content in ingest_jobs and job_transcripts"""
+        """
+        Update transcript content in ingest_jobs and job_transcripts.
+        Uses execute_long_running_operation to handle potential connection timeouts
+        during long editing sessions.
+        """
+        # First, get the existing content with a read connection
         with self.get_read_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('''
@@ -817,8 +1522,8 @@ class DatabaseManager:
             "transcript": updated_transcript_data
         }
 
-
-        with self.get_write_conn() as conn:
+        # Define the update operation function that will be executed with a fresh connection
+        def _update_transcript_content(conn, job_id, updated_metadata, updated_raw_transcript, updated_transcript):
             with conn.cursor() as cur:
                 # Update metadata and raw_transcript in ingest_jobs
                 cur.execute('''
@@ -838,8 +1543,16 @@ class DatabaseManager:
                 ''', (job_id, Json(updated_transcript)))
 
                 conn.commit()
+            return updated_transcript
 
-        return updated_transcript
+        # Execute the update operation with a fresh connection and longer timeout
+        return self.execute_long_running_operation(
+            _update_transcript_content,
+            job_id,
+            updated_metadata,
+            updated_raw_transcript,
+            updated_transcript
+        )
 
     @with_retry
     def delete_job_content_db(self, job_id, youtube_id):
@@ -883,12 +1596,19 @@ class DatabaseManager:
                     )
                     deleted_ingest_job_rows = cur.rowcount
 
+                    # Also delete from transcript_chunks table
+                    cur.execute(
+                        'DELETE FROM transcript_chunks WHERE youtube_id = %s',
+                        (youtube_id,)
+                    )
+                    deleted_chunk_rows = cur.rowcount
+
                     conn.commit()
 
                     return {
                         "deleted_transcript_rows": deleted_transcript_rows,
                         "deleted_job_transcript_rows": deleted_job_transcript_rows,
-                        # "cleared_job_rows": cleared_job_rows, # Removed as job is deleted
+                        "deleted_chunk_rows": deleted_chunk_rows, # Added chunk deletion count
                         "deleted_ingest_job_rows": deleted_ingest_job_rows
                     }
 

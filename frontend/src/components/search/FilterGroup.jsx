@@ -74,14 +74,16 @@ const FilterGroup = ({
       </div>
       <div className="selected-filters">
         {selectedFilters[filterType].map(value => {
-          const displayValue = filterType === 'selected_subject'
-            ? getDisplayValue(value)
-            : value;
+          // Determine the unique primitive value for the key
+          const keyVal = getValue ? getValue(value) : value; 
+          // Determine the display value
+          const displayValue = getDisplayValue ? getDisplayValue(value) : value; 
+          
           return (
             <span 
-              key={value} 
+              key={keyVal} // Use the unique primitive value as the key
               className="filter-tag"
-              onClick={() => removeFilter(filterType, value)}
+              onClick={() => removeFilter(filterType, value)} // Keep original value for removal logic
             >
               {displayValue} ×
             </span>

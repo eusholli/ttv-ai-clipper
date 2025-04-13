@@ -396,19 +396,31 @@ async def search(request: SearchRequest):
         dates = [datetime.strptime(d, "%b %d, %Y") for d in request.selected_date]
         if dates:
             filters['date_range'] = (min(dates), max(dates))
+    # Add subject filter if provided
     if request.selected_subject:
         filters['subjects'] = request.selected_subject
+    # Add other filters that might be passed directly from UI
+    # Note: sentiment_label and entities filters are typically derived from the query
+    # by the parser within semantic_search, but could be passed here if needed.
 
-    results = transcript_search.hybrid_search(
+    # Call the new semantic_search method
+    # Note: semantic_weight is no longer used
+    # We pass top_k as the final_limit
+    results = transcript_search.semantic_search(
         search_text=request.query,
         filters=filters,
-        semantic_weight=0.7,  # Default to balanced semantic/text search
-        limit=request.top_k
+        final_limit=request.top_k
+        # chunk_limit can be left as default or adjusted if needed
     )
 
     # Map similarity score to score for backwards compatibility
+    # The new method already includes 'similarity'
     for result in results:
-        result['score'] = result.pop('similarity')
+        if 'similarity' in result:
+             result['score'] = result.pop('similarity')
+        else:
+             # Handle cases where similarity might be missing (e.g., error)
+             result['score'] = 0.0
 
     return {
         "results": results,

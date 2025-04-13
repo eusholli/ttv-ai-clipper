@@ -16,10 +16,11 @@
 - **PostgreSQL**: Primary database (with pgvector extension)
 - **R2**: Cloud storage for video content
 - **Nginx**: Reverse proxy server
-- **Anthropic API (Claude 3 Haiku)**: Used for LLM-based query parsing and NER during ingestion.
+- **Anthropic API (Claude 3 Haiku)**: Used for LLM-based query parsing and NER during ingestion (via standard client).
 - **Hugging Face Transformers**: Used for sentiment analysis during ingestion (`cardiffnlp/twitter-roberta-base-sentiment-latest`).
-- **Instructor**: Library for structured output from LLMs.
-- **Sentence Transformers**: Used for generating text embeddings (`paraphrase-MiniLM-L3-v2`).
+- **Sentence Transformers**: Used for generating text embeddings (`paraphrase-MiniLM-L3-v2`) for transcript *chunks* and user queries.
+- **Langchain**: Used for text splitting (chunking) utilities (`RecursiveCharacterTextSplitter`).
+- **Tiktoken**: Used by Langchain for token counting during chunking.
 
 ### Development Tools
 - **Docker**: Containerization
@@ -27,6 +28,8 @@
 - **VSCode**: Recommended IDE
 - **Python**: Backend language
 - **Node.js**: Frontend build environment
+- **Langchain**: Text splitting framework
+- **Tiktoken**: Tokenizer library
 
 ## Development Setup
 
@@ -34,8 +37,9 @@
 - Python 3.11+
 - Node.js 16+
 - Docker
-- PostgreSQL 13+
+- PostgreSQL 13+ (with pgvector extension installed)
 - Redis
+- Required Python packages (including `langchain`, `tiktoken`, `sentence-transformers`, `anthropic`, etc. - see `requirements.txt`)
 
 ### Environment Variables
 1. Frontend (.env and .env.production):
@@ -44,6 +48,8 @@
    - API endpoints
 
 2. Backend (.env):
+   - Database connection strings
+   - R2 storage credentials
    - Database connection strings
    - R2 storage credentials
    - API keys and secrets (including `ANTHROPIC_API_KEY`)
@@ -77,9 +83,9 @@
 ## Technical Constraints
 
 ### Performance Requirements
-- API response time < 500ms
-- Video processing in background
-- Efficient search queries
+- API response time < 500ms (Search latency depends on vector index performance and filtering complexity)
+- Video processing (including transcript chunking and embedding generation) in background
+- Efficient search queries (vector search on `transcript_chunks` + metadata filtering)
 - Data Access Layer (DAL) with separate read/write connection pools
 - Optimized connection pool configurations
 - Transaction isolation levels for different operations
@@ -105,9 +111,10 @@
 ### Infrastructure Limits
 - R2 storage quotas
 - Database connection limits
-- API rate limiting (including Anthropic API)
-- Processing resource constraints (including sentiment model execution)
-- LLM API costs and latency
+- API rate limiting (including Anthropic API for optional filter extraction/NER)
+- Processing resource constraints (including chunking, embedding model execution, optional sentiment/NER model execution)
+- LLM API costs and latency (if used for filters/NER)
+- Vector database indexing and query performance
 
 ## Deployment
 

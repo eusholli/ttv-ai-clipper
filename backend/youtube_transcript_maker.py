@@ -6,8 +6,9 @@ import json
 import torch
 import faster_whisper
 from pyannote.audio import Pipeline
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound # Import specific exceptions
 from dotenv import load_dotenv
+import logging # Import logging
 
 # Add a comment explaining the implementation
 """
@@ -23,6 +24,8 @@ Key advantages of this implementation:
 5. Efficient processing of consecutive segments from the same speaker
 6. Efficient GPU acceleration when using Whisper-Turbo fallback
 """
+# Get the logger instance used in the project
+logger = logging.getLogger('content_processor')
 
 load_dotenv()
 
@@ -235,19 +238,21 @@ def fetch_youtube_transcript(video_id, language="en", verbose=True):
     try:
         # Display progress message
         if verbose:
-            print(f"Fetching transcript for video {video_id} using YouTubeTranscriptApi...")
-        
+            print(f"Fetching transcript for video {video_id} using YouTubeTranscriptApi...") # Keep user-facing print
+
         # Fetch transcript
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=[language])
-        
+
         if not transcript_list:
-            print("Warning: No transcript found for the video.")
+            logger.warning(f"No transcript segments found via YouTubeTranscriptApi for video {video_id}.") # Log warning
             return {
                 "text": "",
                 "segments": [],
-                "language": language
+                "error": "No transcript segments returned by API",
+                "error_type": "NoTranscriptFound", # Use a consistent error type
+                "source": "youtube_transcript_api"
             }
-        
+
         # Convert YouTube transcript format to a format similar to Whisper output
         # for compatibility with existing code
         full_text = " ".join([item["text"] for item in transcript_list])
@@ -287,17 +292,28 @@ def fetch_youtube_transcript(video_id, language="en", verbose=True):
             "source": "youtube_transcript_api",
             "processing_time": None  # Will be filled by caller if needed
         }
-        
+
         return transcription
-        
-    except Exception as e:
-        print(f"Error fetching YouTube transcript: {str(e)}")
-        # Provide error details but return a structured response that won't break downstream
+
+    except (TranscriptsDisabled, NoTranscriptFound) as e:
+        # Log expected errors as warnings
+        logger.warning(f"YouTube transcript not available for video {video_id}: {type(e).__name__} - {str(e)}")
         return {
             "text": "",
             "segments": [],
             "error": str(e),
-            "error_type": type(e).__name__
+            "error_type": type(e).__name__,
+            "source": "youtube_transcript_api" # Indicate source even on error
+        }
+    except Exception as e:
+        # Log unexpected errors
+        logger.error(f"Unexpected error fetching YouTube transcript for video {video_id}: {type(e).__name__} - {str(e)}", exc_info=True) # Add traceback
+        return {
+            "text": "",
+            "segments": [],
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "source": "youtube_transcript_api" # Indicate source even on error
         }
 
 def transcribe_audio_with_whisper_turbo(audio_path, model_size="medium", language="en", verbose=True):
@@ -730,8 +746,25 @@ def _get_youtube_transcript(cache_dir, video_id, hf_token, model_size="medium", 
     Returns:
         str: The formatted transcript text
     """
-    
-    # Step 1: Download the video for audio extraction (needed for diarization)
+    # Define cache file path
+    cache_file_path = os.path.join(cache_dir, f"{video_id}_transcript_cache.json")
+
+    # Step 1: Check cache
+    if os.path.exists(cache_file_path):
+        try:
+            print(f"Loading transcript from cache: {cache_file_path}")
+            with open(cache_file_path, 'r') as f:
+                transcript = json.load(f)
+            # If cache loaded successfully, format and return
+            return create_transcript_string(transcript, video_id)
+        except Exception as e:
+            print(f"Warning: Failed to load transcript from cache file {cache_file_path}. Regenerating. Error: {e}")
+            # Proceed with generation if cache read fails
+
+    # If cache doesn't exist or failed to load, proceed with generation
+    print("Transcript not found in cache or cache invalid. Generating...")
+
+    # Step 2: Download the video for audio extraction (needed for diarization)
     # video_path = download_youtube_video(video_id)
     
     # Step 2: Extract audio for diarization
@@ -777,8 +810,18 @@ def _get_youtube_transcript(cache_dir, video_id, hf_token, model_size="medium", 
     
     # Step 6: Generate transcript directly from diarization segments
     transcript = generate_transcript_from_diarization(diarization)
-    
-    # Step 7: Create and return the transcript string
+
+    # Step 7: Save the generated transcript structure to cache
+    try:
+        print(f"Saving generated transcript structure to cache: {cache_file_path}")
+        # Ensure cache directory exists
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(cache_file_path, 'w') as f:
+            json.dump(transcript, f, indent=4)
+    except Exception as e:
+        print(f"Warning: Failed to save transcript structure to cache file {cache_file_path}. Error: {e}")
+
+    # Step 8: Create and return the transcript string
     return create_transcript_string(transcript, video_id)
 
 def test_transcript(video_id, hf_token, model_size="large-v3", language=None, force_refresh=False, overlap_threshold=0.5):
@@ -795,19 +838,23 @@ def test_transcript(video_id, hf_token, model_size="large-v3", language=None, fo
     """
     # If force refresh, delete existing transcript and diarization files
     if force_refresh:
-        json_path = f"{video_id}_transcript.json"
-        txt_path = f"{video_id}_transcript.txt"
-        diarization_json_path = f"{video_id}_diarization.json"
-        
-        if os.path.exists(json_path):
-            print(f"Removing existing transcript: {json_path}")
-            os.remove(json_path)
-        if os.path.exists(txt_path):
-            print(f"Removing existing transcript text: {txt_path}")
-            os.remove(txt_path)
-        if os.path.exists(diarization_json_path):
-            print(f"Removing existing diarization: {diarization_json_path}")
-            os.remove(diarization_json_path)
+        # Define paths relative to the assumed execution context of test_transcript
+        # Assuming 'cache' is a subdirectory where the script is run or accessible
+        cache_dir_test = 'cache'
+        json_path = os.path.join(cache_dir_test, f"{video_id}_transcript.json") # Old cache? Keep for now.
+        txt_path = os.path.join(cache_dir_test, f"{video_id}_transcript.txt") # Old cache? Keep for now.
+        diarization_json_path = os.path.join(cache_dir_test, f"{video_id}_diarization.json")
+        transcript_cache_path = os.path.join(cache_dir_test, f"{video_id}_transcript_cache.json") # New cache file
+
+        files_to_remove = [json_path, txt_path, diarization_json_path, transcript_cache_path]
+
+        for file_path in files_to_remove:
+            if os.path.exists(file_path):
+                print(f"Removing existing file: {file_path}")
+                try:
+                    os.remove(file_path)
+                except OSError as e:
+                    print(f"Error removing file {file_path}: {e}")
     
     # Process the transcript
     print(f"Processing transcript for video ID: {video_id}")

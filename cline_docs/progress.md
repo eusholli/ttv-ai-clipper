@@ -4,8 +4,8 @@
 
 ### Core Functionality
 - ✅ User authentication and authorization
-- ✅ Video processing and transcription
-- ✅ Advanced AI Search (LLM Query Parsing, Sentiment, NER)
+- ✅ Video processing and transcription (now includes chunking & embedding)
+- ✅ **Advanced AI Search (Direct Semantic Search via Chunking)** - Replaced previous hybrid model.
 - ✅ Clip management and sharing
 - ✅ Cloud storage integration
 - ✅ Subscription management
@@ -20,21 +20,22 @@
 
 ### Backend Systems
 - ✅ FastAPI endpoints
-- ✅ Database integration
+- ✅ Database integration (New `transcript_chunks` table, vector index)
 - ✅ R2 storage management
-- ✅ Background processing
+- ✅ Background processing (Ingestion includes chunking/embedding)
 - ✅ Celery task for URL processing
-- ✅ Celery task for video processing
+- ✅ Celery task for video processing (adapted for chunking)
 - ✅ Auto-approve workflow for YouTube videos
 - ✅ UI progress bar synchronization with workflow states
 - ✅ Email functionality
 - ✅ Payment processing
-- ✅ Database schema consolidation
-- ✅ Optimized database indexes
+- ✅ Database schema consolidation (Old `transcripts` table removed)
+- ✅ Optimized database indexes (including vector index on chunks)
 - ✅ Statement timeout configuration
 - ✅ Data Access Layer (DAL) implementation
 - ✅ Separate read/write connection pools
 - ✅ Standardized database error handling
+- ✅ Search logic updated for chunk-based retrieval, filtering, mapping, ranking
 
 ### Infrastructure
 - ✅ Docker containerization
@@ -57,7 +58,9 @@
 ### Feature Enhancements
 - 📋 Advanced analytics dashboard
 - 📋 Batch processing improvements
-- ✅ Enhanced search algorithms (Initial LLM-based implementation complete)
+- ✅ **Enhanced search algorithms (Direct Semantic Search via Chunking implemented)**
+- 📋 Refine chunking strategy (size/overlap) based on testing
+- 📋 Evaluate/optimize enrichment (sentiment/NER) per chunk if enabled
 - 📋 Additional export formats
 
 ### Infrastructure Updates
@@ -69,40 +72,44 @@
 ## Progress Status
 
 ### Current Phase
-- Testing and refinement of new AI search
-- Performance monitoring (Search API, Ingestion Enrichment)
-- Feature enhancement planning
+- **Testing & Evaluation:** Focus on testing the new chunking, embedding, vector search, filtering, mapping, and ranking logic.
+- **Relevance Assessment:** Qualitative evaluation of search results.
+- **Performance Monitoring:** Measure ingestion time and search latency. Optimize vector index.
+- **Refinement:** Adjust chunking strategy or enrichment based on testing.
 
 ### Completed Milestones
 1. Core system architecture
 2. Basic functionality implementation
 3. User authentication system
-4. Search and retrieval system
+4. Search and retrieval system (Initial version)
 5. Payment integration
 6. Initial deployment
-7. Database schema consolidation
-8. Database performance optimization
-9. Background processing improvements
-10. Auto-approve workflow for YouTube videos
-11. Enhanced AI Search Implementation (LLM Query Parsing, Sentiment/NER Enrichment)
+7. Database schema consolidation (Previous)
+8. Database performance optimization (Previous)
+9. Background processing improvements (Previous)
+10. Auto-approve workflow for YouTube videos (Previous)
+11. **Direct Semantic Search Implementation (Chunking, Embedding, Vector Search)** - Replaced previous AI search.
+12. **Database Schema Overhaul (for Chunking)**
 
 ### Next Milestones
-1. Performance optimization
-2. Advanced features implementation
-3. Infrastructure improvements
-4. Security enhancements
+1. **Thorough Testing & Evaluation of New Search**
+2. Performance Optimization (Vector Index, Ingestion Speed)
+3. Refinement of Chunking/Enrichment Strategy
+4. Advanced features implementation (e.g., Analytics)
+5. Infrastructure improvements
+6. Security enhancements
 
 ### Overall Status
 - Project is in active development
-- Core features are complete and functional
-- Focus on testing, optimization, and enhancement (especially AI search)
-- Regular maintenance and updates ongoing
-- Database structure optimized and enriched for AI search
+- Core features are functional, with search significantly refactored.
+- **Current focus:** Testing, evaluating, and optimizing the new direct semantic search via chunking.
+- Regular maintenance and updates ongoing.
+- Database structure completely changed to support chunk-based search (`transcript_chunks` table).
 
 ## Key Metrics
-- Core functionality: 100% complete
+- Core functionality: 95% complete (New search needs thorough testing/validation)
 - Frontend features: 95% complete
-- Backend systems: 98% complete (Core search logic replaced)
+- Backend systems: 95% complete (Search refactored, needs validation; Ingestion adapted)
 - Infrastructure: 90% complete
-- Documentation: 100% complete (Memory Bank updated)
-- Database optimization: 100% complete (Schema updated for AI features)
+- Documentation: 100% complete (Memory Bank updated for new search)
+- Database optimization: N/A (Schema replaced, new vector index needs tuning)

@@ -69,25 +69,45 @@ const SearchSection = ({
 
   // Handle filter selection
   const handleFilterChange = (filterType, value) => {
+    // Explicitly handle clearing the filter (value is [])
+    if (Array.isArray(value) && value.length === 0) {
+      setSelectedFilters(prev => ({
+        ...prev,
+        [filterType]: [] 
+      }));
+      return; // Exit early after clearing
+    }
+
+    // Handle adding/removing a single value
     setSelectedFilters(prev => {
       const currentValues = prev[filterType];
       let newValues;
 
       if (filterType === 'selected_subject') {
-        // For subjects, we store the display string in the UI but use the value for filtering
-        const subjectValue = filters.subjects[value];
+        // For subjects, 'value' is the key from the dropdown. Get the actual filter value.
+        const subjectValue = filters.subjects[value]; 
+        // Ensure subjectValue is not undefined/null before proceeding
+        if (subjectValue === undefined || subjectValue === null) {
+          console.warn(`Subject key "${value}" not found in filters.subjects`);
+          return prev; // Return previous state if key is invalid
+        }
         const valueIndex = currentValues.indexOf(subjectValue);
         newValues = valueIndex === -1
           ? [...currentValues, subjectValue]
           : currentValues.filter((_, index) => index !== valueIndex);
       } else {
+        // For other filters, 'value' is the value itself
         const valueIndex = currentValues.indexOf(value);
         newValues = valueIndex === -1
           ? [...currentValues, value]
           : currentValues.filter((_, index) => index !== valueIndex);
       }
 
-      return { ...prev, [filterType]: newValues };
+      // Ensure all values in the array are strings (or expected type)
+      // This is a safeguard, the main fix is handling the clear action above.
+      const validatedValues = newValues.filter(v => typeof v === 'string' || typeof v === 'number'); // Adjust types if needed
+
+      return { ...prev, [filterType]: validatedValues };
     });
   };
 

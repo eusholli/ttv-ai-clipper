@@ -93,7 +93,7 @@ def try_pytube_download(yt_url, download_file):
 
 def try_yt_dlp_download(yt_url, download_file):
     ydl_opts = {
-        'format': 'bestvideo[ext=h264]+bestaudio[ext=mp3]/best[ext=h264]/best',
+        'format': 'bestvideo+bestaudio/best',
         'outtmpl': download_file,
     }
     try:

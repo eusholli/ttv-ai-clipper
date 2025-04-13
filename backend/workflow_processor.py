@@ -210,8 +210,9 @@ class WorkflowProcessor:
                 - Deleted {deleted_clips} R2 clips
                 - Deleted {result['deleted_transcript_rows']} transcript entries
                 - Deleted {result['deleted_job_transcript_rows']} job transcript entries
-                - Cleared data from {result['cleared_job_rows']} ingest job rows""")
-                
+                - Deleted {result.get('deleted_chunk_rows', 0)} transcript chunk entries # Added chunk deletion log
+                - Deleted {result['deleted_ingest_job_rows']} ingest job row(s)""")
+
         except Exception as e:
             error_msg = f"Failed to delete content: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_msg)
@@ -246,7 +247,8 @@ class WorkflowProcessor:
         # Initialize counters
         processed_count = 0
         total_r2_deleted = 0
-        total_db_deleted = 0
+        total_db_deleted = 0 # Tracks deleted ingest_jobs rows
+        total_db_chunks_deleted = 0 # Tracks deleted transcript_chunks rows
         r2_errors = 0
         db_errors = 0
 
@@ -271,11 +273,16 @@ class WorkflowProcessor:
                 logger.warning(f"Skipping R2 deletion for job {job_id}: No YouTube ID found.")
 
             # 2b. Delete Database Records
+            db_deleted_count_this_job = 0
+            db_chunk_deleted_count_this_job = 0
             try:
                 logger.info(f"Attempting database deletion for job {job_id}")
                 # Use the modified delete_job_content_db which now deletes the ingest_jobs row too
-                db_result = self.dal.delete_job_content_db(job_id, youtube_id) 
-                total_db_deleted += db_result.get("deleted_ingest_job_rows", 0) # Count based on ingest_jobs deletion
+                db_result = self.dal.delete_job_content_db(job_id, youtube_id)
+                db_deleted_count_this_job = db_result.get("deleted_ingest_job_rows", 0) # Count based on ingest_jobs deletion
+                db_chunk_deleted_count_this_job = db_result.get("deleted_chunk_rows", 0) # Count chunks deleted
+                total_db_deleted += db_deleted_count_this_job
+                total_db_chunks_deleted += db_chunk_deleted_count_this_job # Add to total chunk count
                 logger.info(f"Database deletion for job {job_id} successful. Rows affected: {db_result}")
             except Exception as e:
                 db_errors += 1
@@ -289,6 +296,7 @@ class WorkflowProcessor:
             f"  - Jobs processed: {processed_count}/{len(jobs_to_delete)}\n"
             f"  - Total R2 files deleted: {total_r2_deleted}\n"
             f"  - Total DB job records deleted: {total_db_deleted}\n"
+            f"  - Total DB chunk records deleted: {total_db_chunks_deleted}\n" # Added chunk count to summary
             f"  - R2 deletion errors: {r2_errors}\n"
             f"  - DB deletion errors: {db_errors}"
         )
@@ -298,6 +306,7 @@ class WorkflowProcessor:
             "processed_jobs": processed_count,
             "r2_deleted_count": total_r2_deleted,
             "db_deleted_count": total_db_deleted,
+            "db_chunks_deleted_count": total_db_chunks_deleted, # Added chunk count to return value
             "r2_errors": r2_errors,
             "db_errors": db_errors
         }
